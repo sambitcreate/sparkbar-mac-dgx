@@ -169,53 +169,95 @@ private struct ConnectionView: View {
     @Bindable var model: AppModel
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 16) {
-            Spacer(minLength: 12)
-            Image(systemName: isFailure ? "bolt.triangle.fill" : "bolt.horizontal.circle")
-                .font(.system(size: 34))
-                .foregroundStyle(.yellow)
-                .frame(maxWidth: .infinity, alignment: .center)
-                .accessibilityHidden(true)
+        ScrollView {
+            VStack(alignment: .leading, spacing: 16) {
+                Image(systemName: isFailure ? "bolt.triangle.fill" : "bolt.horizontal.circle")
+                    .font(.system(size: 34))
+                    .foregroundStyle(.yellow)
+                    .frame(maxWidth: .infinity, alignment: .center)
+                    .accessibilityHidden(true)
 
-            VStack(alignment: .leading, spacing: 5) {
-                Text("Connect to sparkDash")
-                    .font(.title3.weight(.semibold))
-                Text(model.lastError ?? "Enter the dashboard URL to monitor your Sparks.")
-                    .font(.callout)
-                    .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
+                VStack(alignment: .leading, spacing: 5) {
+                    Text("Connect to sparkDash")
+                        .font(.title3.weight(.semibold))
+                    Text(model.lastError ?? "Enter the dashboard URL to monitor your Sparks.")
+                        .font(.callout)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+
+                TextField("http://sparkdash:5555", text: Binding(
+                    get: { model.settings.endpoint },
+                    set: { model.settings.endpoint = $0 }
+                ))
+                .textFieldStyle(.roundedBorder)
+                .onSubmit { model.connectFromSettings() }
+                .accessibilityLabel("sparkDash dashboard URL")
+
+                Button {
+                    model.connectFromSettings()
+                } label: {
+                    Label(model.connectionState == .connecting ? "Connecting…" : "Connect", systemImage: "arrow.right.circle.fill")
+                        .frame(maxWidth: .infinity)
+                }
+                .buttonStyle(.borderedProminent)
+                .disabled(model.connectionState == .connecting)
+
+                if case .apiReachableLiveStreamUnavailable = model.connectionState {
+                    Label("sparkDash found, but the live stream is unavailable.", systemImage: "exclamationmark.triangle")
+                        .font(.caption)
+                        .foregroundStyle(.orange)
+                }
+
+                SparkDashSetupCard(model: model)
             }
-
-            TextField("http://sparkdash:5555", text: Binding(
-                get: { model.settings.endpoint },
-                set: { model.settings.endpoint = $0 }
-            ))
-            .textFieldStyle(.roundedBorder)
-            .onSubmit { model.connectFromSettings() }
-            .accessibilityLabel("sparkDash dashboard URL")
-
-            Button {
-                model.connectFromSettings()
-            } label: {
-                Label(model.connectionState == .connecting ? "Connecting…" : "Connect", systemImage: "arrow.right.circle.fill")
-                    .frame(maxWidth: .infinity)
-            }
-            .buttonStyle(.borderedProminent)
-            .disabled(model.connectionState == .connecting)
-
-            if case .apiReachableLiveStreamUnavailable = model.connectionState {
-                Label("sparkDash found, but the live stream is unavailable.", systemImage: "exclamationmark.triangle")
-                    .font(.caption)
-                    .foregroundStyle(.orange)
-            }
-            Spacer()
+            .padding(24)
         }
-        .padding(24)
+        .scrollIndicators(.automatic)
     }
 
     private var isFailure: Bool {
         if case .failed = model.connectionState { return true }
         return false
+    }
+}
+
+private struct SparkDashSetupCard: View {
+    let model: AppModel
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 9) {
+            Label("sparkDash is required", systemImage: "info.circle")
+                .font(.headline)
+
+            Text("SparkBar reads metrics from sparkDash; it does not collect DGX metrics itself.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+
+            Text("If sparkDash is not already running:")
+                .font(.caption.weight(.semibold))
+
+            Text("git clone https://github.com/MiaAI-Lab/sparkDash.git\ncd sparkDash\ndocker compose up --build -d")
+                .font(.system(.caption2, design: .monospaced))
+                .textSelection(.enabled)
+                .padding(10)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .background(.black.opacity(0.18), in: RoundedRectangle(cornerRadius: 8))
+
+            Text("Then connect to http://<sparkDash-host>:5555. For development, use npm install followed by npm run dev instead.")
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+
+            Button {
+                model.openSparkDashRepository()
+            } label: {
+                Label("Open sparkDash install guide", systemImage: "arrow.up.right.square")
+            }
+            .buttonStyle(.link)
+        }
+        .padding(12)
+        .background(.quaternary, in: RoundedRectangle(cornerRadius: 12))
     }
 }
 
@@ -258,6 +300,15 @@ private struct FooterView: View {
             .foregroundStyle(.secondary)
 
             Spacer()
+
+            Button {
+                model.openSparkBarRepository()
+            } label: {
+                Image(systemName: "link")
+                    .accessibilityLabel("SparkBar GitHub repository")
+            }
+            .buttonStyle(.plain)
+            .help("SparkBar GitHub repository")
 
             Button(action: openSettings) {
                 Image(systemName: "gearshape")
