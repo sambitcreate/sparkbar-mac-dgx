@@ -228,6 +228,16 @@ final class AppModel {
         NSWorkspace.shared.open(endpoint.apiBaseURL)
     }
 
+    func openSparkDashRepository() {
+        guard let url = URL(string: "https://github.com/MiaAI-Lab/sparkDash") else { return }
+        NSWorkspace.shared.open(url)
+    }
+
+    func openSparkBarRepository() {
+        guard let url = URL(string: "https://github.com/sambitcreate/sparkbar-mac-dgx") else { return }
+        NSWorkspace.shared.open(url)
+    }
+
     func startHistorySampling() {
         historyTask?.cancel()
         historyTask = Task { [weak self] in
