@@ -1,0 +1,1 @@
+{"type":"snapshot","sparks":[{"id":"future","name":"Future","online":true,"newServerField":{"a":1},"metrics":{"gpu":{"usage":55,"futureMetric":"ignored"},"llm":[{"backend":"future","modelId":"future-model","generationTps":12,"newMetric":3}]}}],"refreshInterval":null}
