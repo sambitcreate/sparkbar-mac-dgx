@@ -39,8 +39,25 @@ This repository is configured for public contributions:
 
 - `CI` runs on pull requests and pushes to `main` using a macOS 26 runner. It runs the Swift test suite, builds the packaged app, and validates the app bundle.
 - `Release macOS` runs on every push to `main` (including merges), builds version `0.1.<run number>`, uploads the app as a workflow artifact, and publishes a GitHub release with a SHA-256 checksum.
-- CI releases are ad-hoc signed for packaging. This repository does not yet contain a Developer ID certificate or notarization credentials, so downloaded builds may require Gatekeeper approval. Developer ID signing and notarization can be added later without changing the CI contract.
+- Releases are ad-hoc signed by default. When `MACOS_SIGNING_ENABLED` is set to `true` and the signing/notarization credentials below are configured, the same pipeline uses Developer ID Application signing, Apple notarization, ticket stapling, and Gatekeeper verification.
 - `Pullfrog` is available through a manual workflow dispatch. Add at least one provider key, such as `OPENAI_API_KEY`, as a repository Actions secret before running it. It is intentionally not attached to `pull_request`, so provider secrets are not exposed to arbitrary fork code.
+
+### Enable signed and notarized releases
+
+The release workflow never exposes signing credentials to pull requests. To enable the signed path, add these GitHub Actions repository secrets:
+
+- `MACOS_CERTIFICATE_P12_BASE64`: base64 of a Developer ID Application `.p12` containing the certificate and private key.
+- `MACOS_CERTIFICATE_PASSWORD`: password used when exporting that `.p12`.
+- `APPLE_API_KEY_ID`: App Store Connect API key ID.
+- `APPLE_API_ISSUER_ID`: App Store Connect issuer ID.
+- `APPLE_API_PRIVATE_KEY_BASE64`: base64 of the downloaded App Store Connect `AuthKey_<key-id>.p8` file.
+
+Add these repository variables:
+
+- `MACOS_SIGNING_IDENTITY`: the exact identity, for example `Developer ID Application: Sambit Biswas (5WP229CBB8)`.
+- `MACOS_SIGNING_ENABLED`: `true`.
+
+Create the Developer ID Application certificate in [Apple Developer Certificates](https://developer.apple.com/help/account/certificates/create-developer-id-certificates), export it with its private key from Keychain Access, and create the App Store Connect API key from [Users and Access](https://appstoreconnect.apple.com/access/integrations/api). Do not commit the `.p12`, `.p8`, certificate password, or API credentials. Apple requires Developer ID signing, hardened runtime, and a secure timestamp for software submitted for notarization; the workflow applies all three before submitting with `notarytool`.
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for the local verification commands and pull request expectations.
 
