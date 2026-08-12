@@ -15,7 +15,7 @@ final class StatusItemController: NSObject {
     init(model: AppModel, openSettings: @escaping () -> Void) {
         self.model = model
         self.openSettings = openSettings
-        statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
+        statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
         popover = NSPopover()
         hostingController = NSHostingController(rootView: PopoverRootView(model: model, openSettings: openSettings))
         super.init()
@@ -23,9 +23,10 @@ final class StatusItemController: NSObject {
         if let button = statusItem.button {
             button.target = self
             button.action = #selector(togglePopover(_:))
-            button.imagePosition = .imageLeading
+            button.imagePosition = .imageOnly
             button.imageScaling = .scaleProportionallyDown
             button.font = .systemFont(ofSize: NSFont.systemFontSize)
+            button.setAccessibilityLabel("SparkBar lightning status")
             button.toolTip = "SparkBar"
         }
 
@@ -68,7 +69,7 @@ final class StatusItemController: NSObject {
     private func updateStatusItem() {
         guard let button = statusItem.button else { return }
         let presentation = model.currentPresentation
-        button.title = presentation.title.isEmpty ? "" : " \(presentation.title)"
+        button.title = ""
         button.image = NSImage(systemSymbolName: "bolt.fill", accessibilityDescription: "SparkBar lightning status")
         button.image?.isTemplate = true
         button.image?.size = NSSize(width: 18, height: 18)
