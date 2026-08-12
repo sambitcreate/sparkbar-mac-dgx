@@ -1,0 +1,86 @@
+name: Release macOS
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-macos
+  cancel-in-progress: false
+
+jobs:
+  release:
+    name: Build and publish
+    runs-on: macos-26
+    timeout-minutes: 45
+    env:
+      SPARKBAR_VERSION: 0.1.${{ github.run_number }}
+      SPARKBAR_BUILD: ${{ github.run_number }}
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v6
+
+      - name: Run tests
+        run: swift test
+
+      - name: Build packaged app
+        run: ./scripts/build-app.sh
+
+      - name: Package app
+        run: |
+          set -euo pipefail
+          app=".build/Release/SparkBar.app"
+          archive="dist/SparkBar-${SPARKBAR_VERSION}-macOS.zip"
+
+          bundle_version=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$app/Contents/Info.plist")
+          bundle_build=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$app/Contents/Info.plist")
+          test "$bundle_version" = "$SPARKBAR_VERSION"
+          test "$bundle_build" = "$SPARKBAR_BUILD"
+
+          codesign --force --deep --sign - "$app"
+          codesign --verify --deep --strict "$app"
+
+          mkdir -p dist
+          ditto -c -k --sequesterRsrc --keepParent "$app" "$archive"
+          shasum -a 256 "$archive" > dist/SHA256SUMS
+          cat > dist/RELEASE_NOTES.md <<EOF
+          ## SparkBar ${SPARKBAR_VERSION}
+
+          Automated macOS build for commit ${GITHUB_SHA}.
+
+          This archive is ad-hoc signed for CI packaging and is not Developer ID signed or notarized.
+          Verify the download with the accompanying SHA-256 checksum.
+          EOF
+
+      - name: Upload workflow artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: SparkBar-${{ env.SPARKBAR_VERSION }}
+          path: dist/
+          if-no-files-found: error
+
+      - name: Publish GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          tag="v${SPARKBAR_VERSION}"
+
+          if gh release view "$tag" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "Release $tag already exists; leaving it unchanged."
+            exit 0
+          fi
+
+          gh release create "$tag" \
+            --repo "$GITHUB_REPOSITORY" \
+            --target "$GITHUB_SHA" \
+            --title "SparkBar ${SPARKBAR_VERSION}" \
+            --notes-file dist/RELEASE_NOTES.md \
+            --latest \
+            "dist/SparkBar-${SPARKBAR_VERSION}-macOS.zip" \
+            dist/SHA256SUMS
