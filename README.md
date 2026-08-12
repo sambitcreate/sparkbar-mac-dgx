@@ -1,8 +1,20 @@
 # SparkBar
 
-Native macOS menu-bar companion for [sparkDash](https://github.com/) that keeps the dashboard’s DGX Spark metrics one glance away.
+Native macOS menu-bar companion for [sparkDash](https://github.com/MiaAI-Lab/sparkDash) that keeps the dashboard’s DGX Spark metrics one glance away.
 
 SparkBar is deliberately read-only: it consumes `GET /api/sparks` for connection validation and a single `WS /ws` stream for live snapshots. It does not SSH, run shell commands, enumerate local processes, or administer a DGX Spark.
+
+## Dependency: sparkDash
+
+SparkBar depends on a running [sparkDash](https://github.com/MiaAI-Lab/sparkDash) instance. sparkDash performs the DGX Spark collection and exposes the REST/WebSocket API that SparkBar monitors. If it is not already running, install the recommended Docker deployment:
+
+```sh
+git clone https://github.com/MiaAI-Lab/sparkDash.git
+cd sparkDash
+docker compose up --build -d
+```
+
+Then connect SparkBar to `http://<sparkDash-host>:5555`. For a development checkout, use `npm install` followed by `npm run dev` instead. See the [sparkDash quick start](https://github.com/MiaAI-Lab/sparkDash#quick-start) for the complete setup and DGX configuration steps.
 
 ## Requirements
 
