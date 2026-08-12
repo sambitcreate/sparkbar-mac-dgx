@@ -68,7 +68,7 @@ final class StatusItemController: NSObject {
     private func updateStatusItem() {
         guard let button = statusItem.button else { return }
         let presentation = model.currentPresentation
-        button.title = presentation.title.isEmpty ? "" : " (presentation.title)"
+        button.title = presentation.title.isEmpty ? "" : " \(presentation.title)"
         button.image = NSImage(systemSymbolName: "bolt.fill", accessibilityDescription: "SparkBar lightning status")
         button.image?.isTemplate = true
         button.image?.size = NSSize(width: 18, height: 18)
