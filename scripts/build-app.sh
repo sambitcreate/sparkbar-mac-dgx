@@ -4,6 +4,7 @@ set -eu
 ROOT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 cd "$ROOT_DIR"
 
+swift build -c release
 BIN_DIR=$(swift build -c release --show-bin-path)
 APP_DIR="$ROOT_DIR/.build/Release/SparkBar.app"
 rm -rf "$APP_DIR"
