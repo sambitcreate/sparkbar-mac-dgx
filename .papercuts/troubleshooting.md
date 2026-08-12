@@ -8,3 +8,4 @@
 - 2026-08-12: `scripts/build-app.sh` used SwiftPM `--show-bin-path` without a preceding build, so the packaged release app stayed on a stale binary while debug tests passed; the script now performs an explicit release build first.
 - 2026-08-12: The first combined UI/README patch had a malformed multiline code-block hunk; split the edits into smaller file-specific patches and re-applied them cleanly.
 - 2026-08-12: While inspecting reference GitHub workflows, a zsh loop variable named `path` shadowed the shell's special PATH-backed variable and made `base64`/`tr` appear unavailable; use a non-special variable name in shell inspection loops.
+- 2026-08-12: The first release run passed but GitHub annotated `actions/upload-artifact@v4` for Node 20 deprecation; the workflow now uses the current official `@v7` tag.
