@@ -5,4 +5,4 @@ Build/
 *.xcuserstate
 SparkBar.app/
 dist/
-.papercuts/*.local.md
+.papercuts/
