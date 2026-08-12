@@ -6,3 +6,4 @@
 - 2026-08-12: The first ATS patch context missed because the test declaration and function name share one line; re-read the exact file shape and applied smaller hunks.
 - 2026-08-12: The first packaged-app log query used `--last 15 seconds`; macOS `log show` requires a compact duration such as `--last 15s`, and the shell also required `/usr/bin/log` to bypass a local `log` function.
 - 2026-08-12: `scripts/build-app.sh` used SwiftPM `--show-bin-path` without a preceding build, so the packaged release app stayed on a stale binary while debug tests passed; the script now performs an explicit release build first.
+- 2026-08-12: The first combined UI/README patch had a malformed multiline code-block hunk; split the edits into smaller file-specific patches and re-applied them cleanly.
