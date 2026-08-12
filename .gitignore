@@ -1,0 +1,7 @@
+.build/
+DerivedData/
+Build/
+.DS_Store
+*.xcuserstate
+SparkBar.app/
+.papercuts/*.local.md
