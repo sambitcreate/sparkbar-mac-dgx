@@ -29,8 +29,6 @@
 		<!-- sparkDash is commonly hosted over HTTP on a trusted LAN or Tailscale network. -->
 		<key>NSAllowsArbitraryLoads</key>
 		<true/>
-		<key>NSAllowsLocalNetworking</key>
-		<true/>
 	</dict>
 </dict>
 </plist>
