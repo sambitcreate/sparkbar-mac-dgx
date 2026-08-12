@@ -58,7 +58,7 @@ jobs:
           EOF
 
       - name: Upload workflow artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: SparkBar-${{ env.SPARKBAR_VERSION }}
           path: dist/
