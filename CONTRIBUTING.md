@@ -22,3 +22,5 @@ The build script creates `.build/Release/SparkBar.app`. A live sparkDash endpoin
 - Keep networking read-only: SparkBar should not SSH, execute remote commands, enumerate processes, or administer a DGX Spark.
 
 Pull requests run the macOS CI workflow automatically. Maintainers can run Pullfrog manually from the Actions tab after configuring a provider secret.
+
+Signed distribution is maintainer-only. Never put Developer ID `.p12` files, App Store Connect `.p8` keys, passwords, or API credentials in the repository; configure them as GitHub Actions secrets for the release workflow.
