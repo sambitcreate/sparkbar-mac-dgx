@@ -14,8 +14,46 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  # Always runs so the required "CI / Verify" check is reported on every push/PR.
+  detect:
+    name: Detect changes
+    runs-on: ubuntu-latest
+    outputs:
+      docs-only: ${{ steps.detect.outputs.docs_only }}
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Detect documentation-only changes
+        id: detect
+        run: |
+          if [ "$GITHUB_EVENT_NAME" = "pull_request" ]; then
+            base="origin/$GITHUB_BASE_REF"
+          else
+            base="${{ github.event.before }}"
+          fi
+          case "$base" in
+            "" | 0000000000000000000000000000000000000000)
+              echo "docs_only=false" >> "$GITHUB_OUTPUT"
+              exit 0
+              ;;
+          esac
+          changed=$(git diff --name-only "$base" HEAD)
+          non_docs=$(printf '%s\n' "$changed" | grep -Ev '\.md$' || true)
+          if [ -n "$non_docs" ]; then
+            echo "docs_only=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "docs_only=true" >> "$GITHUB_OUTPUT"
+          fi
+          printf 'Changed files: %s\n' "$(printf '%s\n' "$changed" | tr '\n' ' ')"
+
+  # Skipped (reported as Success) when only .md files changed.
   verify:
     name: Verify
+    needs: detect
+    if: needs.detect.outputs.docs-only == 'false'
     runs-on: macos-26
     timeout-minutes: 30
     steps:

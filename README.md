@@ -70,7 +70,7 @@ swift run SparkBarSmoke http://localhost:5555
 
 ## CI, releases, and signing
 
-- `CI` runs on pull requests and pushes to `main` on a macOS 26 runner: Swift test suite, packaged app build, and bundle validation.
+- `CI` runs on pull requests and pushes to `main` on a macOS 26 runner: Swift test suite, packaged app build, and bundle validation. Changes to only `.md` files skip the verification job.
 - `Release macOS` runs on every push to `main`, builds version `0.1.<run number>`, uploads the app as a workflow artifact, and publishes a GitHub release with a SHA-256 checksum.
 - Releases are ad-hoc signed by default. With `MACOS_SIGNING_ENABLED=true` and the signing/notarization credentials configured, the same pipeline switches to Developer ID Application signing, Apple notarization, ticket stapling, and Gatekeeper verification — the path the upcoming signed DMG ships through.
 - `Pullfrog` is available via manual workflow dispatch; add at least one provider key (e.g. `OPENAI_API_KEY`) as a repository Actions secret first. It is intentionally not attached to `pull_request`, so provider secrets are never exposed to fork code.
