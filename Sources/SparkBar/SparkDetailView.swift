@@ -1,19 +1,25 @@
 import AppKit
+import Charts
 import SparkBarCore
 import SwiftUI
 
 struct SparkDetailView: View {
     let snapshot: SparkSnapshot
     let isServerLive: Bool
+    let isPolling: Bool
     let temperatureUnit: TemperatureUnit
+    let history: [MetricHistoryPoint]
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
-            DetailHeader(snapshot: snapshot, isServerLive: isServerLive)
+            DetailHeader(snapshot: snapshot, isServerLive: isServerLive, isPolling: isPolling)
             if snapshot.isOnline {
                 GPUCard(snapshot: snapshot, temperatureUnit: temperatureUnit)
                 UnifiedMemoryCard(snapshot: snapshot)
                 SystemSummary(snapshot: snapshot, temperatureUnit: temperatureUnit)
+                if !history.isEmpty {
+                    HistoryChart(history: history)
+                }
                 if let llms = snapshot.metrics?.llm, !llms.isEmpty {
                     SectionTitle("LLM Monitoring", systemImage: "text.bubble")
                     ForEach(llmEntries(llms: llms, snapshot: snapshot)) { entry in
@@ -23,6 +29,10 @@ struct SparkDetailView: View {
                 if snapshot.comfyMonitoring == true || snapshot.metrics?.comfy != nil {
                     SectionTitle("ComfyUI", systemImage: "wand.and.stars")
                     ComfyCard(metrics: snapshot.metrics?.comfy)
+                }
+                if let hermes = snapshot.hermes, hermes.monitoring == true {
+                    SectionTitle("Hermes Agent", systemImage: "sparkles")
+                    HermesCard(hermes: hermes)
                 }
                 if let processes = snapshot.metrics?.gpu?.processes, !processes.isEmpty {
                     SectionTitle("GPU Processes", systemImage: "list.bullet.rectangle")
@@ -54,6 +64,7 @@ private struct LLMEntry: Identifiable {
 private struct DetailHeader: View {
     let snapshot: SparkSnapshot
     let isServerLive: Bool
+    let isPolling: Bool
 
     var body: some View {
         VStack(alignment: .leading, spacing: 5) {
@@ -66,18 +77,29 @@ private struct DetailHeader: View {
                     .foregroundStyle(snapshot.isOnline ? .green : .secondary)
             }
             HStack(spacing: 5) {
-                Image(systemName: isServerLive ? "dot.radiowaves.left.and.right" : "wifi.slash")
+                Image(systemName: isServerLive || isPolling ? "dot.radiowaves.left.and.right" : "wifi.slash")
                     .accessibilityHidden(true)
-                Text(isServerLive ? "Live" : "Last known · sparkDash disconnected")
+                Text(subtitleText)
                 if let uptime = snapshot.uptime {
                     Text("· uptime \(MetricFormatter.uptime(uptime))")
                 }
             }
             .font(.caption)
-            .foregroundStyle(isServerLive ? Color.secondary : Color.orange)
+            .foregroundStyle(isServerLive || isPolling ? Color.secondary : Color.orange)
+            if snapshot.role == "worker" {
+                Label("Worker node · \(snapshot.workerLabel ?? "no label")", systemImage: "square.3.layers.3d")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
         }
         .accessibilityElement(children: .combine)
-        .accessibilityLabel("\(snapshot.name), \(snapshot.isOnline ? "online" : "offline"), \(isServerLive ? "live" : "last known, sparkDash disconnected")")
+        .accessibilityLabel("\(snapshot.name), \(snapshot.isOnline ? "online" : "offline"), \(subtitleText)")
+    }
+
+    private var subtitleText: String {
+        if isServerLive { return "Live" }
+        if isPolling { return "Live · REST polling" }
+        return "Last known · sparkDash disconnected"
     }
 }
 
@@ -204,9 +226,21 @@ private struct LLMCard: View {
                     Text(llm.modelId ?? "LLM")
                         .font(.headline)
                         .lineLimit(1)
-                Text("\(llm.backend ?? "Unknown backend") · \(portText)")
+                    Text("\(llm.backend ?? "Unknown backend") · \(portText)")
                         .font(.caption)
                         .foregroundStyle(.secondary)
+                    if let posture = llm.posture {
+                        HStack(spacing: 4) {
+                            Circle()
+                                .fill(postureColor(posture.level))
+                                .frame(width: 6, height: 6)
+                            Text(posture.label ?? posture.level ?? "Unknown exposure")
+                                .lineLimit(1)
+                        }
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                        .help(posture.detail ?? "")
+                    }
                 }
                 Spacer()
                 Text(llm.available == false ? "Down" : MetricFormatter.tokensPerSecond(llm.generationTps))
@@ -239,6 +273,15 @@ private struct LLMCard: View {
     private var portText: String {
         guard let port else { return "port unavailable" }
         return ":\(port)"
+    }
+
+    private func postureColor(_ level: String?) -> Color {
+        switch level?.lowercased() {
+        case "danger": return .red
+        case "warn": return .yellow
+        case "ok": return .green
+        default: return .secondary
+        }
     }
 }
 
@@ -451,6 +494,69 @@ private struct SectionTitle: View {
     var body: some View {
         Label(title, systemImage: systemImage)
             .font(.subheadline.weight(.semibold))
+    }
+}
+
+private struct HistoryChart: View {
+    let history: [MetricHistoryPoint]
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            SectionTitle("Recent history", systemImage: "chart.xyaxis.line")
+            Chart(history) { point in
+                if let gpu = point.gpuUsage {
+                    LineMark(x: .value("Time", point.date), y: .value("Value", gpu))
+                        .foregroundStyle(by: .value("Metric", "GPU"))
+                }
+                if let memory = point.memoryPercentage {
+                    LineMark(x: .value("Time", point.date), y: .value("Value", memory))
+                        .foregroundStyle(by: .value("Metric", "Memory"))
+                }
+            }
+            .chartYScale(domain: 0...100)
+            .chartForegroundStyleScale(["GPU": .blue, "Memory": .orange])
+            .chartLegend(position: .top, alignment: .leading)
+            .chartXAxis {
+                AxisMarks(values: .automatic(desiredCount: 3))
+            }
+            .frame(height: 120)
+            .accessibilityLabel("GPU and memory history chart")
+        }
+        .metricCard()
+    }
+}
+
+private struct HermesCard: View {
+    let hermes: HermesMetrics
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(alignment: .firstTextBaseline) {
+                Text(hermes.version ?? "Version unknown")
+                    .font(.headline)
+                Spacer()
+                if hermes.updateAvailable == true {
+                    Label("Update available", systemImage: "arrow.down.circle.fill")
+                        .font(.caption.weight(.medium))
+                        .foregroundStyle(.orange)
+                } else if hermes.installed == true {
+                    Text("Up to date")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            }
+            if let behind = hermes.behindCommits, hermes.updateAvailable == true {
+                Text("\(behind) commit\(behind == 1 ? "" : "s") behind")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            if let error = hermes.error, !error.isEmpty {
+                Text(error)
+                    .font(.caption)
+                    .foregroundStyle(.orange)
+            }
+        }
+        .metricCard()
     }
 }
 

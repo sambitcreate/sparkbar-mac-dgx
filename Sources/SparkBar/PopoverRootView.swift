@@ -30,9 +30,21 @@ struct PopoverRootView: View {
                             }
                         } else if case .spark(let id) = selectedSection,
                                   let snapshot = model.snapshots.first(where: { $0.id == id }) {
-                            SparkDetailView(snapshot: snapshot, isServerLive: model.connectionState.isLive, temperatureUnit: model.effectiveTemperatureUnit)
+                            SparkDetailView(
+                                snapshot: snapshot,
+                                isServerLive: model.connectionState.isLive,
+                                isPolling: model.connectionState == .apiReachableLiveStreamUnavailable,
+                                temperatureUnit: model.effectiveTemperatureUnit,
+                                history: model.history.samples(for: snapshot.id)
+                            )
                         } else if let snapshot = model.selectedSnapshot {
-                            SparkDetailView(snapshot: snapshot, isServerLive: model.connectionState.isLive, temperatureUnit: model.effectiveTemperatureUnit)
+                            SparkDetailView(
+                                snapshot: snapshot,
+                                isServerLive: model.connectionState.isLive,
+                                isPolling: model.connectionState == .apiReachableLiveStreamUnavailable,
+                                temperatureUnit: model.effectiveTemperatureUnit,
+                                history: model.history.samples(for: snapshot.id)
+                            )
                         }
                     }
                     .padding(16)
@@ -112,16 +124,30 @@ private struct HeaderView: View {
     }
 
     private var statusText: String {
+        let age = ageSuffix
         if model.connectionState == .connected {
-            return model.snapshots.isEmpty ? "Live" : "Live · \(model.onlineCount) online"
+            return model.snapshots.isEmpty ? "Live" : "Live · \(model.onlineCount) online\(age)"
+        }
+        if model.connectionState == .apiReachableLiveStreamUnavailable, !model.snapshots.isEmpty {
+            return "Polling · \(model.onlineCount) online\(age)"
         }
         if model.snapshots.isEmpty { return model.connectionState.shortLabel }
         return "Last known · \(model.connectionState.shortLabel)"
     }
 
+    private var ageSuffix: String {
+        guard let last = model.lastSnapshotAt else { return "" }
+        let seconds = max(0, Date.now.timeIntervalSince(last))
+        if seconds < 60 { return " · updated \(Int(seconds))s ago" }
+        let minutes = Int(seconds) / 60
+        if minutes < 60 { return " · updated \(minutes)m ago" }
+        return " · updated \(minutes / 60)h \(minutes % 60)m ago"
+    }
+
     private var statusColor: Color {
         switch model.connectionState {
         case .connected: return .green
+        case .apiReachableLiveStreamUnavailable: return model.snapshots.isEmpty ? .secondary : .orange
         case .connecting, .reconnecting: return .orange
         default: return .secondary
         }
@@ -186,13 +212,20 @@ private struct ConnectionView: View {
                         .fixedSize(horizontal: false, vertical: true)
                 }
 
-                TextField("http://sparkdash:5555", text: Binding(
+                TextField("http://localhost:5555", text: Binding(
                     get: { model.settings.endpoint },
                     set: { model.settings.endpoint = $0 }
                 ))
                 .textFieldStyle(.roundedBorder)
                 .onSubmit { model.connectFromSettings() }
                 .accessibilityLabel("sparkDash dashboard URL")
+
+                if let endpoint = try? SparkDashEndpoint(model.settings.endpoint),
+                   endpoint.shouldWarnAboutInsecureRemote {
+                    Label("This remote endpoint uses unencrypted HTTP. Prefer HTTPS/WSS or a trusted private network.", systemImage: "lock.open")
+                        .font(.caption)
+                        .foregroundStyle(.orange)
+                }
 
                 Button {
                     model.connectFromSettings()

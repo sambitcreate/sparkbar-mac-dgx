@@ -111,7 +111,11 @@ private struct SparkOverviewRow: View {
                         CompactValue(label: "Temp", value: MetricFormatter.temperatureShort(snapshot.metrics?.gpu?.temperature, unit: temperatureUnit))
                         CompactValue(label: "Memory", value: MetricFormatter.percent(snapshot.metrics?.unifiedMemory?.percentage))
                     }
-                    if let llm = snapshot.primaryLLM, llm.available != false {
+                    if snapshot.role == "worker" {
+                        Text("Worker node · \(snapshot.workerLabel ?? "no label")")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    } else if let llm = snapshot.primaryLLM, llm.available != false {
                         Text("\(llm.modelId ?? llm.backend ?? "LLM") · \(MetricFormatter.tokensPerSecond(llm.generationTps))")
                             .font(.caption)
                             .foregroundStyle(.secondary)

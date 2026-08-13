@@ -4,11 +4,15 @@ import SwiftUI
 struct SettingsView: View {
     @Bindable var model: AppModel
 
+    private var versionString: String {
+        Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "dev"
+    }
+
     var body: some View {
         TabView {
             Form {
                 Section("Connection") {
-                    TextField("sparkDash URL", text: Binding(
+                    TextField("http://localhost:5555", text: Binding(
                         get: { model.settings.endpoint },
                         set: { model.settings.endpoint = $0 }
                     ))
@@ -56,8 +60,14 @@ struct SettingsView: View {
                             set: { model.setSelectedSpark($0.isEmpty ? nil : $0) }
                         )) {
                             Text("Choose a Spark").tag("")
-                            ForEach(model.snapshots) { spark in
-                                Text(spark.name).tag(spark.id)
+                            if model.configuredSparks.isEmpty {
+                                ForEach(model.snapshots) { spark in
+                                    Text(spark.name).tag(spark.id)
+                                }
+                            } else {
+                                ForEach(model.configuredSparks) { spark in
+                                    Text(spark.name).tag(spark.id)
+                                }
                             }
                         }
                     }
@@ -97,7 +107,10 @@ struct SettingsView: View {
                         Spacer()
                         TextField("°C", value: Binding(
                             get: { model.settings.temperatureThreshold },
-                            set: { model.settings.temperatureThreshold = $0; model.settings.persist() }
+                            set: {
+                                model.settings.temperatureThreshold = min(max($0, 20), 120)
+                                model.settings.persist()
+                            }
                         ), format: .number)
                         .frame(width: 70)
                     }
@@ -106,13 +119,27 @@ struct SettingsView: View {
                         Spacer()
                         TextField("%", value: Binding(
                             get: { model.settings.memoryThreshold },
-                            set: { model.settings.memoryThreshold = $0; model.settings.persist() }
+                            set: {
+                                model.settings.memoryThreshold = min(max($0, 20), 100)
+                                model.settings.persist()
+                            }
                         ), format: .number)
                         .frame(width: 70)
+                    }
+                    Stepper(value: Binding(
+                        get: { model.settings.alertCooldownMinutes },
+                        set: { model.settings.alertCooldownMinutes = $0; model.settings.persist() }
+                    ), in: 1...120) {
+                        Text("Notification cooldown \(Int(model.settings.alertCooldownMinutes)) min")
                     }
                     Text("Notifications use cooldown and hysteresis to prevent repeated alerts.")
                         .font(.caption)
                         .foregroundStyle(.secondary)
+                }
+                Section("About") {
+                    LabeledContent("Version", value: versionString)
+                    Button("SparkBar repository") { model.openSparkBarRepository() }
+                    Button("sparkDash repository") { model.openSparkDashRepository() }
                 }
             }
             .formStyle(.grouped)
