@@ -1,12 +1,48 @@
 # SparkBar
 
-Native macOS menu-bar companion for [sparkDash](https://github.com/MiaAI-Lab/sparkDash) that keeps the dashboard’s DGX Spark metrics one glance away.
+A native macOS menu-bar companion for [sparkDash](https://github.com/MiaAI-Lab/sparkDash) that keeps your DGX Spark metrics one glance away.
 
-SparkBar is deliberately read-only: it consumes `GET /api/sparks` for connection validation and a single `WS /ws` stream for live snapshots. It does not SSH, run shell commands, enumerate local processes, or administer a DGX Spark.
+<p align="center">
+  <img src="assets/sparkbar-hero.webp" alt="SparkBar popover showing DGX1 GPU, unified memory, and LLM monitoring" width="480" />
+</p>
 
-## Dependency: sparkDash
+> **A signed DMG is coming very, very soon.** Until it lands, [build from source](#quick-start) — it takes about two minutes.
 
-SparkBar depends on a running [sparkDash](https://github.com/MiaAI-Lab/sparkDash) instance. sparkDash performs the DGX Spark collection and exposes the REST/WebSocket API that SparkBar monitors. If it is not already running, install the recommended Docker deployment:
+## What it is
+
+SparkBar lives in your menu bar and streams live DGX Spark snapshots over WebSocket: GPU utilization and temperature, unified memory pressure, power draw, and LLM throughput. No SSH, no shell commands, no agent on the box — it is deliberately read-only and consumes only `GET /api/sparks` for connection validation and a single `WS /ws` stream for live data.
+
+## Quick start
+
+### Prerequisites
+
+- macOS 14 Sonoma or newer
+- Xcode 26.6 / Swift 6.3, or a compatible Swift 6 toolchain
+- A reachable [sparkDash](https://github.com/MiaAI-Lab/sparkDash) endpoint
+
+### Build from source
+
+```sh
+git clone https://github.com/sambitcreate/sparkbar-mac-dgx.git
+cd sparkbar-mac-dgx
+swift build
+./scripts/build-app.sh
+open .build/Release/SparkBar.app
+```
+
+`build-app.sh` assembles the `.app` bundle; `swift build` alone is enough for development and testing.
+
+### Run the tests
+
+```sh
+swift test
+```
+
+All networking, decoding, selection, formatting, history, and alert logic lives in `SparkBarCore`, so the suite runs without launching AppKit. The app target adds the `NSStatusItem`, the SwiftUI popover and settings window, launch-at-login, and notifications.
+
+## Connect to sparkDash
+
+SparkBar depends on a running [sparkDash](https://github.com/MiaAI-Lab/sparkDash) instance, which performs the DGX Spark collection and exposes the REST/WebSocket API that SparkBar monitors. The recommended deployment is Docker:
 
 ```sh
 git clone https://github.com/MiaAI-Lab/sparkDash.git
@@ -14,63 +50,46 @@ cd sparkDash
 docker compose up --build -d
 ```
 
-Then connect SparkBar to `http://<sparkDash-host>:5555`. For a development checkout, use `npm install` followed by `npm run dev` instead. See the [sparkDash quick start](https://github.com/MiaAI-Lab/sparkDash#quick-start) for the complete setup and DGX configuration steps.
+Then point SparkBar at your sparkDash address: `http://localhost:5555` when sparkDash runs on the same Mac, or `http://<host-ip>:5555` over LAN or Tailscale for a remote DGX. For a development checkout of sparkDash, use `npm install` followed by `npm run dev`. See the [sparkDash quick start](https://github.com/MiaAI-Lab/sparkDash#quick-start) for the complete setup and DGX configuration.
 
-## Requirements
+SparkBar accepts any `http://`, `https://`, `ws://`, or `wss://` base URL; HTTP maps to WS and HTTPS maps to WSS automatically.
 
-- macOS 14 Sonoma or newer
-- Xcode 26.6 / Swift 6.3 or a compatible Swift 6 toolchain
-- A sparkDash endpoint reachable from the Mac (the default development endpoint is `http://100.101.194.105:5555`)
+### A note on HTTP
 
-## Build and test
-
-```sh
-swift build
-swift test
-./scripts/build-app.sh
-open .build/Release/SparkBar.app
-```
-
-The package intentionally keeps the pure networking, decoding, selection, formatting, history, and alert logic in `SparkBarCore` so it can be tested without launching AppKit. The app target provides the native `NSStatusItem`, SwiftUI popover/settings window, launch-at-login integration, and notifications.
-
-## CI, pull requests, and releases
-
-This repository is configured for public contributions:
-
-- `CI` runs on pull requests and pushes to `main` using a macOS 26 runner. It runs the Swift test suite, builds the packaged app, and validates the app bundle.
-- `Release macOS` runs on every push to `main` (including merges), builds version `0.1.<run number>`, uploads the app as a workflow artifact, and publishes a GitHub release with a SHA-256 checksum.
-- Releases are ad-hoc signed by default. When `MACOS_SIGNING_ENABLED` is set to `true` and the signing/notarization credentials below are configured, the same pipeline uses Developer ID Application signing, Apple notarization, ticket stapling, and Gatekeeper verification.
-- `Pullfrog` is available through a manual workflow dispatch. Add at least one provider key, such as `OPENAI_API_KEY`, as a repository Actions secret before running it. It is intentionally not attached to `pull_request`, so provider secrets are not exposed to arbitrary fork code.
-
-### Enable signed and notarized releases
-
-The release workflow never exposes signing credentials to pull requests. To enable the signed path, add these GitHub Actions repository secrets:
-
-- `MACOS_CERTIFICATE_P12_BASE64`: base64 of a Developer ID Application `.p12` containing the certificate and private key.
-- `MACOS_CERTIFICATE_PASSWORD`: password used when exporting that `.p12`.
-- `APPLE_API_KEY_ID`: App Store Connect API key ID.
-- `APPLE_API_ISSUER_ID`: App Store Connect issuer ID.
-- `APPLE_API_PRIVATE_KEY_BASE64`: base64 of the downloaded App Store Connect `AuthKey_<key-id>.p8` file.
-
-Add these repository variables:
-
-- `MACOS_SIGNING_IDENTITY`: the exact identity, for example `Developer ID Application: Sambit Biswas (5WP229CBB8)`.
-- `MACOS_SIGNING_ENABLED`: `true`.
-
-Create the Developer ID Application certificate in [Apple Developer Certificates](https://developer.apple.com/help/account/certificates/create-developer-id-certificates), export it with its private key from Keychain Access, and create the App Store Connect API key from [Users and Access](https://appstoreconnect.apple.com/access/integrations/api). Do not commit the `.p12`, `.p8`, certificate password, or API credentials. Apple requires Developer ID signing, hardened runtime, and a secure timestamp for software submitted for notarization; the workflow applies all three before submitting with `notarytool`.
-
-See [CONTRIBUTING.md](CONTRIBUTING.md) for the local verification commands and pull request expectations.
+HTTP is enabled in the app bundle because sparkDash is commonly reached over a trusted LAN or Tailscale network. SparkBar is read-only and restricts itself to the monitoring REST endpoints and `/ws`. Use HTTPS/WSS or an authenticated reverse proxy when the endpoint is not on a trusted private network.
 
 ## Live smoke test
 
-The endpoint can be checked without launching the app:
+Check an endpoint without launching the app:
 
 ```sh
-curl -i http://100.101.194.105:5555/api/sparks
-curl -i http://100.101.194.105:5555/api/settings
-swift run SparkBarSmoke http://100.101.194.105:5555
+curl -i http://localhost:5555/api/sparks
+curl -i http://localhost:5555/api/settings
+swift run SparkBarSmoke http://localhost:5555
 ```
 
-SparkBar’s UI accepts any `http://`, `https://`, `ws://`, or `wss://` base URL. HTTP maps to WS and HTTPS maps to WSS automatically.
+## CI, releases, and signing
 
-HTTP is enabled in the app bundle because sparkDash is commonly reached over a trusted LAN or Tailscale network. SparkBar is read-only and restricts itself to the monitoring REST endpoints and `/ws`; use HTTPS/WSS or an authenticated reverse proxy when the endpoint is not on a trusted private network.
+- `CI` runs on pull requests and pushes to `main` on a macOS 26 runner: Swift test suite, packaged app build, and bundle validation.
+- `Release macOS` runs on every push to `main`, builds version `0.1.<run number>`, uploads the app as a workflow artifact, and publishes a GitHub release with a SHA-256 checksum.
+- Releases are ad-hoc signed by default. With `MACOS_SIGNING_ENABLED=true` and the signing/notarization credentials configured, the same pipeline switches to Developer ID Application signing, Apple notarization, ticket stapling, and Gatekeeper verification — the path the upcoming signed DMG ships through.
+- `Pullfrog` is available via manual workflow dispatch; add at least one provider key (e.g. `OPENAI_API_KEY`) as a repository Actions secret first. It is intentionally not attached to `pull_request`, so provider secrets are never exposed to fork code.
+
+### Enable signed and notarized releases
+
+The release workflow never exposes signing credentials to pull requests. To enable the signed path, add these repository secrets:
+
+- `MACOS_CERTIFICATE_P12_BASE64` — base64 of a Developer ID Application `.p12` containing the certificate and private key
+- `MACOS_CERTIFICATE_PASSWORD` — password used when exporting that `.p12`
+- `APPLE_API_KEY_ID` — App Store Connect API key ID
+- `APPLE_API_ISSUER_ID` — App Store Connect issuer ID
+- `APPLE_API_PRIVATE_KEY_BASE64` — base64 of the App Store Connect `AuthKey_<key-id>.p8`
+
+And these repository variables:
+
+- `MACOS_SIGNING_IDENTITY` — the exact identity, e.g. `Developer ID Application: Your Name (TEAMID)`
+- `MACOS_SIGNING_ENABLED` — `true`
+
+Create the Developer ID Application certificate in [Apple Developer Certificates](https://developer.apple.com/help/account/certificates/create-developer-id-certificates), export it with its private key from Keychain Access, and create the App Store Connect API key from [Users and Access](https://appstoreconnect.apple.com/access/integrations/api). Never commit the `.p12`, `.p8`, certificate password, or API credentials. Apple requires Developer ID signing, hardened runtime, and a secure timestamp for notarized software; the workflow applies all three before submitting with `notarytool`.
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) for local verification commands and pull request expectations.
