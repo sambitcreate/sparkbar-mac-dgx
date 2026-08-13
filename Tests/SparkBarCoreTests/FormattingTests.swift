@@ -22,5 +22,8 @@ struct FormattingTests {
         #expect(MetricFormatter.tokensPerSecond(81.4) == "81.4 t/s")
         #expect(MetricFormatter.bytesPerSecond(1_048_576) == "1 MB/s")
         #expect(MetricFormatter.uptime(3 * 86_400 + 14 * 3_600) == "3d 14h")
+        #expect(MetricFormatter.uptime(90) == "1m")
+        #expect(MetricFormatter.uptime(45) == "45s")
+        #expect(MetricFormatter.uptime(0) == "0s")
     }
 }

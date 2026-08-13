@@ -22,4 +22,16 @@ struct HistoryTests {
         #expect(history.samples(for: "one").count == 1)
         #expect(history.samples(for: "one").first?.gpuUsage == 20)
     }
+
+    @Test func prunesSamplesForSparksThatLeaveTheFleet() {
+        var history = HistoryStore(maxSamples: 10)
+        let one = makeSnapshot(id: "one", name: "One", gpu: 10)
+        let two = makeSnapshot(id: "two", name: "Two", gpu: 20)
+        history.sample([one, two], at: Date(timeIntervalSince1970: 1))
+        #expect(history.samples(for: "one").count == 1)
+        #expect(history.samples(for: "two").count == 1)
+        history.sample([two], at: Date(timeIntervalSince1970: 2))
+        #expect(history.samples(for: "one").isEmpty)
+        #expect(history.samples(for: "two").count == 2)
+    }
 }

@@ -72,9 +72,11 @@ public enum MetricFormatter {
         let days = total / 86_400
         let hours = (total % 86_400) / 3_600
         let minutes = (total % 3_600) / 60
+        let remainingSeconds = total % 60
         if days > 0 { return "\(days)d \(hours)h" }
         if hours > 0 { return "\(hours)h \(minutes)m" }
-        return "\(minutes)m"
+        if minutes > 0 { return "\(minutes)m" }
+        return "\(remainingSeconds)s"
     }
 
     public static func clockPercentage(_ current: Double?, maximum: Double?) -> String {

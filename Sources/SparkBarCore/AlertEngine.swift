@@ -31,7 +31,11 @@ public struct AlertEngine: Equatable, Sendable {
         self.cooldown = cooldown
     }
 
-    public mutating func evaluate(snapshots: [SparkSnapshot], at date: Date = .now) -> [AlertEvent] {
+    public mutating func evaluate(
+        snapshots: [SparkSnapshot],
+        at date: Date = .now,
+        temperatureUnit: TemperatureUnit = .celsius
+    ) -> [AlertEvent] {
         var events: [AlertEvent] = []
         var currentKeys = Set<String>()
 
@@ -60,7 +64,7 @@ public struct AlertEngine: Equatable, Sendable {
                         sparkID: snapshot.id,
                         sparkName: snapshot.name,
                         reason: reason,
-                        body: body(for: reason, snapshot: snapshot)
+                        body: body(for: reason, snapshot: snapshot, temperatureUnit: temperatureUnit)
                     ))
                     lastSent[key] = date
                 }
@@ -72,12 +76,16 @@ public struct AlertEngine: Equatable, Sendable {
         return events.sorted { $0.id < $1.id }
     }
 
-    private func body(for reason: SparkAlertReason, snapshot: SparkSnapshot) -> String {
+    private func body(
+        for reason: SparkAlertReason,
+        snapshot: SparkSnapshot,
+        temperatureUnit: TemperatureUnit
+    ) -> String {
         switch reason {
         case .offline:
             return "\(snapshot.name) went offline."
         case .highTemperature:
-            return "\(snapshot.name) reached \(MetricFormatter.temperature(snapshot.metrics?.gpu?.temperature))."
+            return "\(snapshot.name) reached \(MetricFormatter.temperature(snapshot.metrics?.gpu?.temperature, unit: temperatureUnit))."
         case .highMemory:
             return "\(snapshot.name) is using \(MetricFormatter.percent(snapshot.metrics?.unifiedMemory?.percentage)) unified memory."
         case .oomRisk:

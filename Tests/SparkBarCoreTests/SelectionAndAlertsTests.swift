@@ -70,4 +70,79 @@ struct SelectionAndAlertsTests {
         #expect(policy.delay(attempt: 20, jitter: 0) == 30)
         #expect(policy.delay(attempt: 5, jitter: 1) <= 30)
     }
+
+    @Test func alertBodyUsesRequestedTemperatureUnit() {
+        var engine = AlertEngine(thresholds: AlertThresholds(temperatureCelsius: 85), cooldown: 60)
+        let hot = makeSnapshot(id: "hot", name: "Hot", temperature: 90)
+        let events = engine.evaluate(
+            snapshots: [hot],
+            at: Date(timeIntervalSince1970: 100),
+            temperatureUnit: .fahrenheit
+        )
+        #expect(events.count == 1)
+        #expect(events.first?.body == "Hot reached 194°F.")
+    }
+
+    @Test func autoSelectionRespectsCustomThresholds() {
+        let hot = makeSnapshot(id: "hot", name: "Hot", gpu: 10, temperature: 90)
+        let busy = makeSnapshot(id: "busy", name: "Busy", gpu: 95, temperature: 60)
+        // Default thresholds flag the hot spark as alerting.
+        #expect(SparkSelector.auto(snapshots: [busy, hot], selectedID: nil)?.id == "hot")
+        // With a raised threshold it is no longer alerting; GPU wins.
+        let custom = AlertThresholds(temperatureCelsius: 95)
+        #expect(SparkSelector.auto(snapshots: [busy, hot], selectedID: nil, thresholds: custom)?.id == "busy")
+    }
+
+    @Test func presenterShowsDataWhileRESTPollingFallbackIsActive() {
+        let online = makeSnapshot(id: "one", name: "One", gpu: 42)
+        let presentation = MenuBarPresenter.make(
+            snapshots: [online],
+            connectionState: .apiReachableLiveStreamUnavailable,
+            metric: .gpuUtilization,
+            sourceMode: .auto,
+            selectedID: "one"
+        )
+        #expect(presentation.title == "42%")
+        #expect(presentation.severity == .normal)
+    }
+
+    @Test func presenterAggregatesAcrossOnlineSparks() {
+        let first = makeSnapshot(id: "one", name: "One", gpu: 42)
+        let second = makeSnapshot(id: "two", name: "Two", gpu: 78)
+        let presentation = MenuBarPresenter.make(
+            snapshots: [first, second],
+            connectionState: .connected,
+            metric: .gpuUtilization,
+            sourceMode: .aggregate,
+            selectedID: nil
+        )
+        #expect(presentation.title == "78%")
+        #expect(presentation.iconName == "bolt.fill")
+        #expect(presentation.severity == .normal)
+    }
+
+    @Test func presenterFlagsAlertingSparkWithWarningIcon() {
+        let hot = makeSnapshot(id: "hot", name: "Hot", temperature: 90)
+        let presentation = MenuBarPresenter.make(
+            snapshots: [hot],
+            connectionState: .connected,
+            metric: .gpuUtilization,
+            sourceMode: .auto,
+            selectedID: nil
+        )
+        #expect(presentation.iconName == "bolt.triangle.fill")
+        #expect(presentation.severity == .warning)
+    }
+
+    @Test func presenterShowsConnectingIconWhileReconnecting() {
+        let presentation = MenuBarPresenter.make(
+            snapshots: [],
+            connectionState: .reconnecting(attempt: 3),
+            metric: .gpuUtilization,
+            sourceMode: .auto,
+            selectedID: nil
+        )
+        #expect(presentation.iconName == "bolt.badge.clock")
+        #expect(presentation.isDimmed)
+    }
 }

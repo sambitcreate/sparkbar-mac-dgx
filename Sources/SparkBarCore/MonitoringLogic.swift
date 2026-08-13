@@ -111,8 +111,8 @@ public struct AlertThresholds: Equatable, Sendable {
 
     public init(
         temperatureCelsius: Double = 85,
-        memoryPercentage: Double = 90,
-        memoryClearPercentage: Double = 85,
+        memoryPercentage: Double = 85,
+        memoryClearPercentage: Double = 80,
         temperatureClearCelsius: Double = 80
     ) {
         self.temperatureCelsius = temperatureCelsius
@@ -205,7 +205,7 @@ public enum SparkSelector {
 
         if let alerting = online
             .filter({ !$0.alertReasons(thresholds: thresholds).isEmpty })
-            .sorted(by: prioritySort)
+            .sorted(by: { prioritySort($0, $1, thresholds: thresholds) })
             .first {
             return alerting
         }
@@ -224,9 +224,13 @@ public enum SparkSelector {
         return online.first(where: { $0.id == selectedID }) ?? online.first
     }
 
-    private static func prioritySort(_ lhs: SparkSnapshot, _ rhs: SparkSnapshot) -> Bool {
-        let lhsReasons = lhs.alertReasons().count
-        let rhsReasons = rhs.alertReasons().count
+    private static func prioritySort(
+        _ lhs: SparkSnapshot,
+        _ rhs: SparkSnapshot,
+        thresholds: AlertThresholds
+    ) -> Bool {
+        let lhsReasons = lhs.alertReasons(thresholds: thresholds).count
+        let rhsReasons = rhs.alertReasons(thresholds: thresholds).count
         if lhsReasons != rhsReasons { return lhsReasons > rhsReasons }
         if lhs.gpuUsage != rhs.gpuUsage { return lhs.gpuUsage > rhs.gpuUsage }
         if lhs.llmActivity != rhs.llmActivity { return lhs.llmActivity > rhs.llmActivity }
@@ -244,10 +248,14 @@ public enum MenuBarPresenter {
         temperatureUnit: TemperatureUnit = .celsius,
         thresholds: AlertThresholds = .init()
     ) -> MenuBarPresentation {
-        guard connectionState.isLive, !snapshots.isEmpty else {
-            let icon = connectionState == .connecting || connectionState.shortLabel == "Reconnecting…"
-                ? "bolt.badge.clock"
-                : "bolt.slash"
+        guard isShowingData(connectionState), !snapshots.isEmpty else {
+            let isConnecting: Bool = {
+                switch connectionState {
+                case .connecting, .reconnecting: return true
+                default: return false
+                }
+            }()
+            let icon = isConnecting ? "bolt.badge.clock" : "bolt.slash"
             return MenuBarPresentation(
                 title: "—",
                 accessibilityLabel: "sparkDash \(connectionState.shortLabel.lowercased())",
@@ -331,6 +339,15 @@ public enum MenuBarPresenter {
             severity: warning ? .warning : .normal,
             sourceSparkID: spark.id
         )
+    }
+
+    /// The menu bar may show data while the connection is healthy or while
+    /// the REST polling fallback is delivering snapshots.
+    private static func isShowingData(_ state: ConnectionState) -> Bool {
+        switch state {
+        case .connected, .apiReachableLiveStreamUnavailable: return true
+        default: return false
+        }
     }
 
     private static func singleTitle(metric: DisplayMetric, spark: SparkSnapshot, temperatureUnit: TemperatureUnit) -> String {

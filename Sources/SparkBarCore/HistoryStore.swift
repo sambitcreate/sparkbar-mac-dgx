@@ -1,6 +1,6 @@
 import Foundation
 
-public struct MetricHistoryPoint: Equatable, Sendable {
+public struct MetricHistoryPoint: Equatable, Identifiable, Sendable {
     public let date: Date
     public let gpuUsage: Double?
     public let temperature: Double?
@@ -23,6 +23,10 @@ public struct MetricHistoryPoint: Equatable, Sendable {
         self.memoryPercentage = memoryPercentage
         self.llmTokensPerSecond = llmTokensPerSecond
     }
+
+    /// Points within a spark's series are timestamp-unique (duplicate
+    /// timestamps replace the previous sample).
+    public var id: Date { date }
 }
 
 public struct HistoryStore: Equatable, Sendable {
@@ -34,6 +38,12 @@ public struct HistoryStore: Equatable, Sendable {
     }
 
     public mutating func sample(_ snapshots: [SparkSnapshot], at date: Date = .now) {
+        // Drop series for sparks that left the fleet so a long-lived process
+        // does not accumulate stale per-spark buffers.
+        let seenIDs = Set(snapshots.map(\.id))
+        for staleID in samplesBySparkID.keys.filter({ !seenIDs.contains($0) }) {
+            samplesBySparkID.removeValue(forKey: staleID)
+        }
         for snapshot in snapshots {
             let point = MetricHistoryPoint(
                 date: date,
