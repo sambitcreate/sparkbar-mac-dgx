@@ -178,25 +178,9 @@ final class AppModel {
             serverSettings = result.settings
             logger.info("REST connection succeeded with \(result.sparkCount) Spark(s)")
         case .snapshot(let envelope):
-            if snapshots != envelope.sparks {
-                snapshots = envelope.sparks
-            }
-            lastSnapshotAt = .now
-            sampleHistory()
             connectionState = .connected
-            lastError = nil
             logger.info("Received snapshot with \(envelope.sparks.count) Spark(s)")
-            // Only auto-pick when nothing is selected; never clobber the
-            // user's explicit choice when a spark briefly leaves the list.
-            if selectedSparkID == nil {
-                selectedSparkID = snapshots.first?.id
-            }
-            alertEngine.thresholds = settings.alertThresholds
-            alertEngine.cooldown = settings.alertCooldownMinutes * 60
-            let events = alertEngine.evaluate(snapshots: snapshots, temperatureUnit: effectiveTemperatureUnit)
-            if settings.showNotifications {
-                Task { await notificationService.deliver(events) }
-            }
+            applySnapshot(envelope)
         case .diagnostic(let message):
             lastError = message
             logger.error("Transport diagnostic: \(message, privacy: .public)")
@@ -264,6 +248,28 @@ final class AppModel {
         history.sample(snapshots)
     }
 
+    /// Shared path for WebSocket frames and REST polling results so alerts,
+    /// selection, history, and freshness behave identically on both paths.
+    func applySnapshot(_ envelope: SnapshotEnvelope) {
+        if snapshots != envelope.sparks {
+            snapshots = envelope.sparks
+        }
+        lastSnapshotAt = .now
+        sampleHistory()
+        lastError = nil
+        // Only auto-pick when nothing is selected; never clobber the
+        // user's explicit choice when a spark briefly leaves the list.
+        if selectedSparkID == nil {
+            selectedSparkID = snapshots.first?.id
+        }
+        alertEngine.thresholds = settings.alertThresholds
+        alertEngine.cooldown = settings.alertCooldownMinutes * 60
+        let events = alertEngine.evaluate(snapshots: snapshots, temperatureUnit: effectiveTemperatureUnit)
+        if settings.showNotifications {
+            Task { await notificationService.deliver(events) }
+        }
+    }
+
     /// REST polling fallback for when the WebSocket is blocked but the API is
     /// reachable. Runs across the client's reconnect cycles and stops as soon
     /// as a real WebSocket connection delivers data.
@@ -277,8 +283,7 @@ final class AppModel {
                    let envelope = try? await client.pollSnapshot(sparkIDs: ids),
                    !envelope.sparks.isEmpty {
                     guard !Task.isCancelled, self.connectionState != .connected else { return }
-                    self.snapshots = envelope.sparks
-                    self.lastSnapshotAt = .now
+                    self.applySnapshot(envelope)
                 }
                 let intervalMs = UInt64(max(self.serverSettings?.pollIntervalMs ?? 2000, 1000))
                 do {

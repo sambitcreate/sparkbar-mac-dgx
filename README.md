@@ -12,6 +12,10 @@ A native macOS menu-bar companion for [sparkDash](https://github.com/MiaAI-Lab/s
 
 SparkBar lives in your menu bar and streams live DGX Spark snapshots over WebSocket: GPU utilization and temperature, unified memory pressure, power draw, and LLM throughput. No SSH, no shell commands, no agent on the box — it is deliberately read-only and consumes only `GET /api/sparks` for connection validation and a single `WS /ws` stream for live data.
 
+- The menu bar item shows the live metric you choose — GPU utilization, temperature, unified memory, LLM tokens/sec, or GPU + temperature — and switches to a warning icon when a Spark alerts. Right-click it for **Open sparkDash**, **Settings**, and **Quit**.
+- The popover shows an overview of all Sparks, per-Spark detail pages (GPU, unified memory, network, storage, LLM and ComfyUI monitoring, Hermes Agent updates), and a rolling GPU/memory history chart.
+- If sparkDash is reachable over REST but its WebSocket is blocked, SparkBar keeps refreshing through `GET /api/sparks/:id/metrics` polling until the stream recovers.
+
 ## Quick start
 
 ### Prerequisites
@@ -42,7 +46,7 @@ All networking, decoding, selection, formatting, history, and alert logic lives 
 
 ## Connect to sparkDash
 
-SparkBar depends on a running [sparkDash](https://github.com/MiaAI-Lab/sparkDash) instance, which performs the DGX Spark collection and exposes the REST/WebSocket API that SparkBar monitors. The recommended deployment is Docker:
+SparkBar depends on a running [sparkDash](https://github.com/MiaAI-Lab/sparkDash) instance, which performs the DGX Spark collection and exposes the REST/WebSocket API that SparkBar monitors. On first launch SparkBar has no endpoint configured; click the menu bar icon and enter your sparkDash URL in the connection view. The recommended deployment is Docker:
 
 ```sh
 git clone https://github.com/MiaAI-Lab/sparkDash.git
