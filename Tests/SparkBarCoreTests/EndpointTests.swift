@@ -35,4 +35,19 @@ struct EndpointTests {
             try SparkDashEndpoint(" ")
         }
     }
+
+    @Test func stripsEmbeddedCredentialsFromNormalizedURL() throws {
+        let endpoint = try SparkDashEndpoint("http://user:secret@10.0.0.5:5555")
+        #expect(endpoint.displayString == "http://10.0.0.5:5555")
+        #expect(endpoint.apiURL(path: "/api/sparks").absoluteString == "http://10.0.0.5:5555/api/sparks")
+    }
+
+    @Test func detectsPrivateIPv6Hosts() throws {
+        #expect(try SparkDashEndpoint("http://[::1]:5555").isLikelyPrivateHost)
+        #expect(try SparkDashEndpoint("http://[fc00::7]:5555").isLikelyPrivateHost)
+        #expect(try SparkDashEndpoint("http://[fd12:3456::1]:5555").isLikelyPrivateHost)
+        #expect(try SparkDashEndpoint("http://[fe80::1]:5555").isLikelyPrivateHost)
+        #expect(try SparkDashEndpoint("http://[febf::1]:5555").isLikelyPrivateHost)
+        #expect(!(try SparkDashEndpoint("http://[2001:db8::1]:5555").isLikelyPrivateHost))
+    }
 }

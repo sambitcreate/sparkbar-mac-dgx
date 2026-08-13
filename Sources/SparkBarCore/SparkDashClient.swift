@@ -77,14 +77,24 @@ public actor SparkDashClient {
     private var reconnectAttempt = 0
     private let backoff: ReconnectBackoff
 
+    /// SparkBar talks to LAN hosts that may be offline, so a snappy timeout
+    /// matters more than the system default of 60s per request.
+    private static func makeDefaultSession() -> URLSession {
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.timeoutIntervalForRequest = 10
+        configuration.timeoutIntervalForResource = 20
+        configuration.requestCachePolicy = .reloadIgnoringLocalCacheData
+        return URLSession(configuration: configuration)
+    }
+
     public init(
         endpoint: SparkDashEndpoint,
-        session: URLSession = .shared,
+        session: URLSession? = nil,
         decoder: JSONDecoder = JSONDecoder(),
         backoff: ReconnectBackoff = .init()
     ) {
         self.endpoint = endpoint
-        self.session = session
+        self.session = session ?? Self.makeDefaultSession()
         self.decoder = decoder
         self.backoff = backoff
         var continuation: AsyncStream<SparkDashClientEvent>.Continuation?
@@ -112,6 +122,9 @@ public actor SparkDashClient {
     }
 
     public func testConnection() async throws -> ConnectionTestResult {
+        // Fetch settings in parallel with the spark list; both are cheap GETs
+        // and the connection test waits for neither to finish the other.
+        async let settingsTask = Self.fetchSettings(endpoint: endpoint, session: session)
         let request = URLRequest(url: endpoint.apiURL(path: "/api/sparks"))
         let (data, response) = try await session.data(for: request)
         guard let httpResponse = response as? HTTPURLResponse else {
@@ -126,21 +139,50 @@ public actor SparkDashClient {
         } catch {
             throw SparkDashClientError.invalidPayload
         }
-        let settings = await fetchSettings()
+        let settings = await settingsTask
         return ConnectionTestResult(endpoint: endpoint, sparks: list.sparks, settings: settings)
     }
 
-    private func fetchSettings() async -> SparkDashSettings? {
+    /// Settings are advisory; a failure must not fail the connection test.
+    /// Uses its own decoder to stay nonisolated.
+    private nonisolated static func fetchSettings(
+        endpoint: SparkDashEndpoint,
+        session: URLSession
+    ) async -> SparkDashSettings? {
         do {
             let (data, response) = try await session.data(for: URLRequest(url: endpoint.apiURL(path: "/api/settings")))
             guard let httpResponse = response as? HTTPURLResponse,
                   (200..<300).contains(httpResponse.statusCode) else {
                 return nil
             }
-            return try decoder.decode(SparkDashSettings.self, from: data)
+            return try JSONDecoder().decode(SparkDashSettings.self, from: data)
         } catch {
             return nil
         }
+    }
+
+    /// REST fallback for when the WebSocket is blocked but the API is not.
+    /// Fetches the per-spark metrics endpoint and wraps them in the same
+    /// envelope shape the WebSocket delivers, skipping sparks that fail.
+    public func pollSnapshot(sparkIDs: [String]) async throws -> SnapshotEnvelope {
+        var snapshots: [SparkSnapshot] = []
+        snapshots.reserveCapacity(sparkIDs.count)
+        for id in sparkIDs {
+            let request = URLRequest(url: endpoint.apiURL(path: "/api/sparks/\(id)/metrics"))
+            do {
+                let (data, response) = try await session.data(for: request)
+                guard let httpResponse = response as? HTTPURLResponse,
+                      (200..<300).contains(httpResponse.statusCode) else {
+                    continue
+                }
+                if let snapshot = try? decoder.decode(SparkSnapshot.self, from: data) {
+                    snapshots.append(snapshot)
+                }
+            } catch {
+                continue
+            }
+        }
+        return SnapshotEnvelope(type: "snapshot", sparks: snapshots, refreshInterval: nil)
     }
 
     private func runLoop() async {
@@ -158,7 +200,6 @@ public actor SparkDashClient {
 
                 guard running, !Task.isCancelled else { break }
                 try await runWebSocket()
-                reconnectAttempt += 1
             } catch is CancellationError {
                 break
             } catch let error as SparkDashClientError {

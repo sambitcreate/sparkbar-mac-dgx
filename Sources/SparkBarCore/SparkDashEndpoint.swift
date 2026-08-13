@@ -35,6 +35,10 @@ public struct SparkDashEndpoint: Equatable, Sendable {
         var components = URLComponents(url: parsedURL, resolvingAgainstBaseURL: false)
         components?.fragment = nil
         components?.query = nil
+        // Credentials embedded in the URL never leave this init; the endpoint
+        // is persisted and logged, so userinfo must not survive normalization.
+        components?.user = nil
+        components?.password = nil
         if components?.path == "/" {
             components?.path = ""
         } else if let path = components?.path, path.hasSuffix("/") {
@@ -55,7 +59,15 @@ public struct SparkDashEndpoint: Equatable, Sendable {
 
     public var isLikelyPrivateHost: Bool {
         guard let host = baseURL.host?.lowercased() else { return false }
-        if host == "localhost" || host.hasSuffix(".local") || host == "::1" { return true }
+        if host == "localhost" || host.hasSuffix(".local") { return true }
+        if host.contains(":") {
+            if host == "::1" { return true }
+            // fc00::/7 unique local and fe80::/10 link local.
+            if host.hasPrefix("fc") || host.hasPrefix("fd") { return true }
+            if host.hasPrefix("fe8") || host.hasPrefix("fe9")
+                || host.hasPrefix("fea") || host.hasPrefix("feb") { return true }
+            return false
+        }
         guard let address = IPv4Address(host) else { return false }
         switch address.octets {
         case (10, _, _, _), (127, _, _, _), (192, 168, _, _), (172, 16...31, _, _), (100, 64...127, _, _):
