@@ -1,0 +1,35 @@
+{
+  "type": "snapshot",
+  "refreshInterval": 2000,
+  "sparks": [
+    {
+      "id": "dgx1",
+      "name": "DGX1",
+      "online": true,
+      "metrics": {
+        "network": {
+          "primaryInterface": "enP7s7",
+          "linkSpeedMbps": 10000,
+          "wolMac": "aa:bb:cc:dd:ee:ff",
+          "interfaces": [
+            {
+              "name": "enP7s7",
+              "rxSpeed": 1048576,
+              "txSpeed": 2048,
+              "ip": "192.168.1.143",
+              "operstate": "up"
+            },
+            {
+              "name": "eth1",
+              "rxSpeed": 0,
+              "txSpeed": 512,
+              "ip": null,
+              "operstate": "down",
+              "disabled": true
+            }
+          ]
+        }
+      }
+    }
+  ]
+}

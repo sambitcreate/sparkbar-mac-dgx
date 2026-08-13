@@ -1,0 +1,72 @@
+{
+  "type": "snapshot",
+  "refreshInterval": 2000,
+  "sparks": [
+    {
+      "id": "dgx1",
+      "name": "DGX1",
+      "online": true,
+      "comfyMonitoring": true,
+      "metrics": {
+        "comfy": {
+          "available": true,
+          "port": 8188,
+          "version": "0.3.49",
+          "pytorchVersion": "2.9.1",
+          "deviceType": "cuda",
+          "queueRunning": 1,
+          "queuePending": 2,
+          "activeJob": {
+            "id": "job-1",
+            "status": "running",
+            "title": "SDXL Workflow",
+            "models": [
+              "sd_xl_base_1.0.safetensors"
+            ],
+            "nodeCount": 42,
+            "steps": 30,
+            "width": 1024,
+            "height": 1024,
+            "batchSize": 1,
+            "sampler": "euler",
+            "createTime": 1750000000000
+          },
+          "pendingJobs": [
+            {
+              "id": "job-2",
+              "status": "pending",
+              "title": "Batch 2",
+              "models": [],
+              "nodeCount": 40
+            }
+          ],
+          "progress": {
+            "promptId": "job-1",
+            "nodeLabel": "KSampler",
+            "value": 18,
+            "max": 30,
+            "percent": 60,
+            "updatedAt": 1750000000000,
+            "source": "ws"
+          },
+          "lastJob": {
+            "id": "job-0",
+            "status": "completed",
+            "title": "Previous",
+            "durationMs": 45000,
+            "endedAt": 1750000000000
+          },
+          "modelsInstalled": {
+            "checkpoints": [
+              "sd_xl_base_1.0.safetensors"
+            ],
+            "loras": []
+          },
+          "queueEtaMs": 240000,
+          "openUrl": "http://192.168.1.143:8188",
+          "error": null
+        }
+      }
+    }
+  ]
+}

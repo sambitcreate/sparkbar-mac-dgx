@@ -1,3 +1,4 @@
+import AppKit
 import SparkBarCore
 import SwiftUI
 
@@ -183,12 +184,12 @@ private struct SystemSummary: View {
 
     private var networkValue: String {
         guard let interface = snapshot.metrics?.network?.interfaces?.first(where: { $0.disabled != true }) else { return "—" }
-        return "↓ \(MetricFormatter.bytesPerSecond(interface.rxBytesPerSecond))"
+        return "↓ \(MetricFormatter.bytesPerSecond(interface.rxSpeed))"
     }
 
     private var networkDetail: String {
         guard let interface = snapshot.metrics?.network?.interfaces?.first(where: { $0.disabled != true }) else { return "Unavailable" }
-        return "↑ \(MetricFormatter.bytesPerSecond(interface.txBytesPerSecond))"
+        return "↑ \(MetricFormatter.bytesPerSecond(interface.txSpeed))"
     }
 }
 
@@ -247,25 +248,89 @@ private struct ComfyCard: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             HStack {
-                Text(metrics?.model ?? "ComfyUI")
+                Text(jobTitle)
                     .font(.headline)
+                    .lineLimit(1)
                 Spacer()
-                Text(metrics == nil ? "Idle" : MetricFormatter.percent(MetricFormatter.normalisedProgress(metrics?.progress)))
+                Text(statusText)
                     .font(.subheadline.monospacedDigit())
+                    .foregroundStyle(statusColor)
             }
             if let metrics {
-                ProgressView(value: (MetricFormatter.normalisedProgress(metrics.progress) ?? 0) / 100)
-                Text("\(metrics.currentStep.map(String.init) ?? "—") / \(metrics.totalSteps.map(String.init) ?? "—") steps · \(metrics.running.map(String.init) ?? "—") running · \(metrics.queued.map(String.init) ?? "—") queued")
+                if let percent = progressPercent(metrics) {
+                    ProgressView(value: Double(percent) / 100)
+                }
+                Text("\(metrics.queueRunning ?? 0) running · \(metrics.queuePending ?? 0) queued")
                     .font(.caption)
                     .foregroundStyle(.secondary)
-                if let eta = metrics.etaSeconds {
-                    Text("ETA \(MetricFormatter.uptime(eta))")
+                if let job = metrics.activeJob {
+                    if let models = job.models, !models.isEmpty {
+                        Text(models.joined(separator: ", "))
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                    }
+                    if let steps = job.steps {
+                        Text("\(steps) steps · \(job.sampler ?? "unknown sampler")")
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+                if let etaMs = metrics.queueEtaMs {
+                    Text("ETA \(MetricFormatter.uptime(etaMs / 1000))")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
+                if let error = metrics.error, !error.isEmpty {
+                    Text(error)
+                        .font(.caption)
+                        .foregroundStyle(.orange)
+                }
+                HStack(spacing: 10) {
+                    if let version = metrics.version {
+                        Text("v\(version)")
+                    }
+                    if let device = metrics.deviceType {
+                        Text(device)
+                    }
+                    if let openUrl = metrics.openUrl, let url = URL(string: openUrl) {
+                        Button("Open ComfyUI") { NSWorkspace.shared.open(url) }
+                            .buttonStyle(.link)
+                    }
+                }
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+            } else {
+                Text("Idle")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
             }
         }
         .metricCard()
+    }
+
+    private var jobTitle: String {
+        metrics?.activeJob?.title ?? metrics?.lastJob?.title ?? "ComfyUI"
+    }
+
+    private var statusText: String {
+        guard let metrics else { return "Idle" }
+        if metrics.available == false { return "Unavailable" }
+        if let percent = progressPercent(metrics) { return "\(percent)%" }
+        if (metrics.queueRunning ?? 0) > 0 { return "Running" }
+        return "Idle"
+    }
+
+    private var statusColor: Color {
+        guard let metrics else { return .secondary }
+        if metrics.available == false { return .orange }
+        if let error = metrics.error, !error.isEmpty { return .orange }
+        return .primary
+    }
+
+    private func progressPercent(_ metrics: ComfyMetrics) -> Int? {
+        guard let percent = MetricFormatter.normalisedProgress(metrics.progress?.percent) else { return nil }
+        return Int(percent.rounded())
     }
 }
 
@@ -299,13 +364,19 @@ private struct NetworkCard: View {
                 SectionTitle("Network", systemImage: "network")
                 ForEach(interfaces) { interface in
                     HStack {
+                        Circle()
+                            .fill(interface.isUp ? .green : .secondary)
+                            .frame(width: 6, height: 6)
+                            .accessibilityHidden(true)
                         Text(interface.label ?? interface.name ?? "Interface")
                         Spacer()
-                        Text("↓ \(MetricFormatter.bytesPerSecond(interface.rxBytesPerSecond))")
-                        Text("↑ \(MetricFormatter.bytesPerSecond(interface.txBytesPerSecond))")
+                        Text("↓ \(MetricFormatter.bytesPerSecond(interface.rxSpeed))")
+                        Text("↑ \(MetricFormatter.bytesPerSecond(interface.txSpeed))")
                             .foregroundStyle(.secondary)
                     }
                     .font(.caption)
+                    .accessibilityElement(children: .combine)
+                    .accessibilityLabel("\(interface.label ?? interface.name ?? "Interface"), \(interface.isUp ? "up" : "down")")
                 }
             }
             .metricCard()

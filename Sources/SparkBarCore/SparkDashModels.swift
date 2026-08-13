@@ -403,54 +403,184 @@ public struct LLMPosture: Decodable, Equatable, Sendable {
 }
 
 public struct ComfyMetrics: Decodable, Equatable, Sendable {
-    public let model: String?
-    public let progress: Double?
-    public let currentStep: Int?
-    public let totalSteps: Int?
-    public let running: Int?
-    public let queued: Int?
-    public let etaSeconds: Double?
-    public let status: String?
+    public let available: Bool?
+    public let port: Int?
+    public let version: String?
+    public let pytorchVersion: String?
+    public let deviceType: String?
+    public let queueRunning: Int?
+    public let queuePending: Int?
+    public let activeJob: ComfyJob?
+    public let pendingJobs: [ComfyJob]?
+    public let progress: ComfyProgress?
+    public let lastJob: ComfyLastJob?
+    public let modelsInstalled: ComfyModelsInstalled?
+    public let queueEtaMs: Double?
+    public let openUrl: String?
     public let error: String?
 
-    enum CodingKeys: String, CodingKey {
-        case model, modelName, currentModel, progress, progressPercent, currentStep, step, totalSteps, steps
-        case running, runningJobs, queued, queue, queueLength, etaSeconds, eta, status, error
-    }
-
     public init(
-        model: String? = nil,
-        progress: Double? = nil,
-        currentStep: Int? = nil,
-        totalSteps: Int? = nil,
-        running: Int? = nil,
-        queued: Int? = nil,
-        etaSeconds: Double? = nil,
-        status: String? = nil,
+        available: Bool? = nil,
+        port: Int? = nil,
+        version: String? = nil,
+        pytorchVersion: String? = nil,
+        deviceType: String? = nil,
+        queueRunning: Int? = nil,
+        queuePending: Int? = nil,
+        activeJob: ComfyJob? = nil,
+        pendingJobs: [ComfyJob]? = nil,
+        progress: ComfyProgress? = nil,
+        lastJob: ComfyLastJob? = nil,
+        modelsInstalled: ComfyModelsInstalled? = nil,
+        queueEtaMs: Double? = nil,
+        openUrl: String? = nil,
         error: String? = nil
     ) {
-        self.model = model
+        self.available = available
+        self.port = port
+        self.version = version
+        self.pytorchVersion = pytorchVersion
+        self.deviceType = deviceType
+        self.queueRunning = queueRunning
+        self.queuePending = queuePending
+        self.activeJob = activeJob
+        self.pendingJobs = pendingJobs
         self.progress = progress
-        self.currentStep = currentStep
-        self.totalSteps = totalSteps
-        self.running = running
-        self.queued = queued
-        self.etaSeconds = etaSeconds
-        self.status = status
+        self.lastJob = lastJob
+        self.modelsInstalled = modelsInstalled
+        self.queueEtaMs = queueEtaMs
+        self.openUrl = openUrl
         self.error = error
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case available, port, version, pytorchVersion, deviceType
+        case queueRunning, queuePending, activeJob, pendingJobs, progress
+        case lastJob, modelsInstalled, queueEtaMs, openUrl, error
     }
 
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
-        model = try c.decodeFirst(String.self, forKeys: [.model, .modelName, .currentModel])
-        progress = try c.decodeFirst(Double.self, forKeys: [.progress, .progressPercent])
-        currentStep = try c.decodeFirst(Int.self, forKeys: [.currentStep, .step])
-        totalSteps = try c.decodeFirst(Int.self, forKeys: [.totalSteps, .steps])
-        running = try c.decodeFirst(Int.self, forKeys: [.running, .runningJobs])
-        queued = try c.decodeFirst(Int.self, forKeys: [.queued, .queue, .queueLength])
-        etaSeconds = try c.decodeFirst(Double.self, forKeys: [.etaSeconds, .eta])
-        status = try c.decodeIfPresent(String.self, forKey: .status)
+        available = try c.decodeIfPresent(Bool.self, forKey: .available)
+        port = try c.decodeIfPresent(Int.self, forKey: .port)
+        version = try c.decodeIfPresent(String.self, forKey: .version)
+        pytorchVersion = try c.decodeIfPresent(String.self, forKey: .pytorchVersion)
+        deviceType = try c.decodeIfPresent(String.self, forKey: .deviceType)
+        queueRunning = try c.decodeIfPresent(Int.self, forKey: .queueRunning)
+        queuePending = try c.decodeIfPresent(Int.self, forKey: .queuePending)
+        activeJob = try c.decodeIfPresent(ComfyJob.self, forKey: .activeJob)
+        pendingJobs = try c.decodeLossy(ComfyJob.self, forKey: .pendingJobs)
+        progress = try c.decodeIfPresent(ComfyProgress.self, forKey: .progress)
+        lastJob = try c.decodeIfPresent(ComfyLastJob.self, forKey: .lastJob)
+        modelsInstalled = try c.decodeIfPresent(ComfyModelsInstalled.self, forKey: .modelsInstalled)
+        queueEtaMs = try c.decodeIfPresent(Double.self, forKey: .queueEtaMs)
+        openUrl = try c.decodeIfPresent(String.self, forKey: .openUrl)
         error = try c.decodeIfPresent(String.self, forKey: .error)
+    }
+}
+
+public struct ComfyJob: Decodable, Equatable, Identifiable, Sendable {
+    public let id: String
+    public let status: String?
+    public let title: String?
+    public let models: [String]?
+    public let nodeCount: Int?
+    public let steps: Int?
+    public let width: Int?
+    public let height: Int?
+    public let batchSize: Int?
+    public let sampler: String?
+    public let createTime: Double?
+
+    public init(
+        id: String,
+        status: String? = nil,
+        title: String? = nil,
+        models: [String]? = nil,
+        nodeCount: Int? = nil,
+        steps: Int? = nil,
+        width: Int? = nil,
+        height: Int? = nil,
+        batchSize: Int? = nil,
+        sampler: String? = nil,
+        createTime: Double? = nil
+    ) {
+        self.id = id
+        self.status = status
+        self.title = title
+        self.models = models
+        self.nodeCount = nodeCount
+        self.steps = steps
+        self.width = width
+        self.height = height
+        self.batchSize = batchSize
+        self.sampler = sampler
+        self.createTime = createTime
+    }
+}
+
+public struct ComfyProgress: Decodable, Equatable, Sendable {
+    public let promptId: String?
+    public let nodeId: String?
+    public let nodeLabel: String?
+    public let value: Double?
+    public let max: Double?
+    /// Progress percentage (0-100).
+    public let percent: Double?
+    public let updatedAt: Double?
+    /// "ws" (live) or "estimate" (elapsed/avg heuristic).
+    public let source: String?
+
+    public init(
+        promptId: String? = nil,
+        nodeId: String? = nil,
+        nodeLabel: String? = nil,
+        value: Double? = nil,
+        max: Double? = nil,
+        percent: Double? = nil,
+        updatedAt: Double? = nil,
+        source: String? = nil
+    ) {
+        self.promptId = promptId
+        self.nodeId = nodeId
+        self.nodeLabel = nodeLabel
+        self.value = value
+        self.max = max
+        self.percent = percent
+        self.updatedAt = updatedAt
+        self.source = source
+    }
+}
+
+public struct ComfyLastJob: Decodable, Equatable, Sendable {
+    public let id: String?
+    public let status: String?
+    public let title: String?
+    public let durationMs: Double?
+    public let endedAt: Double?
+
+    public init(
+        id: String? = nil,
+        status: String? = nil,
+        title: String? = nil,
+        durationMs: Double? = nil,
+        endedAt: Double? = nil
+    ) {
+        self.id = id
+        self.status = status
+        self.title = title
+        self.durationMs = durationMs
+        self.endedAt = endedAt
+    }
+}
+
+public struct ComfyModelsInstalled: Decodable, Equatable, Sendable {
+    public let checkpoints: [String]?
+    public let loras: [String]?
+
+    public init(checkpoints: [String]? = nil, loras: [String]? = nil) {
+        self.checkpoints = checkpoints
+        self.loras = loras
     }
 }
 
@@ -478,13 +608,55 @@ public struct NetworkMetrics: Decodable, Equatable, Sendable {
 public struct NetworkInterfaceMetrics: Decodable, Equatable, Identifiable, Sendable {
     public let name: String?
     public let label: String?
-    public let rxBytesPerSecond: Double?
-    public let txBytesPerSecond: Double?
-    public let linkSpeedMbps: Double?
-    public let ipAddress: String?
+    /// Bytes per second. sparkDash sends "rxSpeed"; "rxBytesPerSecond" is a
+    /// legacy alias accepted for older server versions.
+    public let rxSpeed: Double?
+    public let txSpeed: Double?
+    public let ip: String?
+    /// Interface operstate: "up", "down", or "unknown".
+    public let operstate: String?
     public let disabled: Bool?
 
-    public var id: String { name ?? label ?? ipAddress ?? "interface" }
+    public init(
+        name: String? = nil,
+        label: String? = nil,
+        rxSpeed: Double? = nil,
+        txSpeed: Double? = nil,
+        ip: String? = nil,
+        operstate: String? = nil,
+        disabled: Bool? = nil
+    ) {
+        self.name = name
+        self.label = label
+        self.rxSpeed = rxSpeed
+        self.txSpeed = txSpeed
+        self.ip = ip
+        self.operstate = operstate
+        self.disabled = disabled
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case name, label
+        case rxSpeed, rxBytesPerSecond
+        case txSpeed, txBytesPerSecond
+        case ip, ipAddress
+        case operstate, linkSpeedMbps, disabled
+    }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        name = try c.decodeIfPresent(String.self, forKey: .name)
+        label = try c.decodeIfPresent(String.self, forKey: .label)
+        rxSpeed = try c.decodeFirst(Double.self, forKeys: [.rxSpeed, .rxBytesPerSecond])
+        txSpeed = try c.decodeFirst(Double.self, forKeys: [.txSpeed, .txBytesPerSecond])
+        ip = try c.decodeFirst(String.self, forKeys: [.ip, .ipAddress])
+        operstate = try c.decodeIfPresent(String.self, forKey: .operstate)
+        disabled = try c.decodeIfPresent(Bool.self, forKey: .disabled)
+    }
+
+    public var isUp: Bool { operstate?.lowercased() == "up" }
+
+    public var id: String { name ?? label ?? ip ?? "interface" }
 }
 
 public struct HermesMetrics: Decodable, Equatable, Sendable {
