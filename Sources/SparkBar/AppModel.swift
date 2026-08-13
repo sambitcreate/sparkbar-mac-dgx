@@ -28,7 +28,7 @@ final class AppModel {
     private var client: SparkDashClient?
     private var currentEndpoint: SparkDashEndpoint?
     private var eventTask: Task<Void, Never>?
-    private var historyTask: Task<Void, Never>?
+    private var pollTask: Task<Void, Never>?
     private var alertEngine: AlertEngine
     let launchAtLoginService = LaunchAtLoginService()
     let notificationService = NotificationService()
@@ -37,10 +37,19 @@ final class AppModel {
     init(defaults: UserDefaults = .standard) {
         settings = SettingsStore(defaults: defaults)
         selectedSparkID = settings.selectedSparkID
-        alertEngine = AlertEngine(thresholds: settings.alertThresholds)
+        alertEngine = AlertEngine(
+            thresholds: settings.alertThresholds,
+            cooldown: settings.alertCooldownMinutes * 60
+        )
     }
 
     var isConnected: Bool { connectionState.isLive }
+
+    /// True when snapshots are being refreshed, either over the WebSocket or
+    /// through the REST polling fallback.
+    var isReceivingData: Bool {
+        connectionState.isLive || connectionState == .apiReachableLiveStreamUnavailable
+    }
 
     var effectiveTemperatureUnit: TemperatureUnit {
         guard settings.temperatureUnit == .followSparkDash else { return settings.temperatureUnit }
@@ -70,10 +79,9 @@ final class AppModel {
 
     func start() {
         guard !isStopping else { return }
-        logger.info("Starting SparkBar with endpoint \(self.settings.endpoint, privacy: .public)")
-        startHistorySampling()
+        logger.info("Starting SparkBar")
         guard let endpoint = try? SparkDashEndpoint(settings.endpoint), !settings.endpoint.isEmpty else {
-            logger.error("No valid endpoint configured")
+            logger.info("No endpoint configured yet; waiting for input from the connection view")
             return
         }
         connect(to: endpoint)
@@ -87,9 +95,9 @@ final class AppModel {
     func stop() {
         isStopping = true
         eventTask?.cancel()
-        historyTask?.cancel()
+        pollTask?.cancel()
         eventTask = nil
-        historyTask = nil
+        pollTask = nil
         if let client {
             Task { await client.stop() }
         }
@@ -97,6 +105,8 @@ final class AppModel {
     }
 
     func connectFromSettings() {
+        // Keep whatever the user typed so quitting mid-edit does not lose it.
+        settings.persist()
         do {
             let endpoint = try SparkDashEndpoint(settings.endpoint)
             settings.endpoint = endpoint.displayString
@@ -112,7 +122,8 @@ final class AppModel {
     func connect(to endpoint: SparkDashEndpoint) {
         isStopping = false
         eventTask?.cancel()
-        historyTask?.cancel()
+        pollTask?.cancel()
+        pollTask = nil
         if let oldClient = client {
             Task { await oldClient.stop() }
         }
@@ -140,7 +151,6 @@ final class AppModel {
             }
         }
         Task { await newClient.start() }
-        startHistorySampling()
     }
 
     func reconnect() {
@@ -152,27 +162,38 @@ final class AppModel {
         case .state(let state):
             connectionState = state
             logger.info("Connection state: \(state.shortLabel, privacy: .public)")
+            switch state {
+            case .apiReachableLiveStreamUnavailable:
+                startPollingFallback()
+            case .connected, .failed, .disconnected:
+                stopPollingFallback()
+            default:
+                break
+            }
             if case .failed(let message) = state {
                 lastError = message
             }
         case .connectionTested(let result):
             configuredSparks = result.sparks
             serverSettings = result.settings
-            connectionState = .apiReachableLiveStreamUnavailable
             logger.info("REST connection succeeded with \(result.sparkCount) Spark(s)")
         case .snapshot(let envelope):
             if snapshots != envelope.sparks {
                 snapshots = envelope.sparks
             }
             lastSnapshotAt = .now
+            sampleHistory()
             connectionState = .connected
             lastError = nil
             logger.info("Received snapshot with \(envelope.sparks.count) Spark(s)")
-            if selectedSparkID == nil || !snapshots.contains(where: { $0.id == selectedSparkID }) {
+            // Only auto-pick when nothing is selected; never clobber the
+            // user's explicit choice when a spark briefly leaves the list.
+            if selectedSparkID == nil {
                 selectedSparkID = snapshots.first?.id
             }
             alertEngine.thresholds = settings.alertThresholds
-            let events = alertEngine.evaluate(snapshots: snapshots)
+            alertEngine.cooldown = settings.alertCooldownMinutes * 60
+            let events = alertEngine.evaluate(snapshots: snapshots, temperatureUnit: effectiveTemperatureUnit)
             if settings.showNotifications {
                 Task { await notificationService.deliver(events) }
             }
@@ -238,20 +259,40 @@ final class AppModel {
         NSWorkspace.shared.open(url)
     }
 
-    func startHistorySampling() {
-        historyTask?.cancel()
-        historyTask = Task { [weak self] in
+    func sampleHistory() {
+        guard !snapshots.isEmpty else { return }
+        history.sample(snapshots)
+    }
+
+    /// REST polling fallback for when the WebSocket is blocked but the API is
+    /// reachable. Runs across the client's reconnect cycles and stops as soon
+    /// as a real WebSocket connection delivers data.
+    private func startPollingFallback() {
+        guard pollTask == nil, let client else { return }
+        pollTask = Task { [weak self, client] in
             while !Task.isCancelled {
-                try? await Task.sleep(nanoseconds: 2_000_000_000)
-                guard !Task.isCancelled else { break }
-                self?.sampleHistory()
+                guard let self else { return }
+                let ids = self.configuredSparks.map(\.id)
+                if !ids.isEmpty,
+                   let envelope = try? await client.pollSnapshot(sparkIDs: ids),
+                   !envelope.sparks.isEmpty {
+                    guard !Task.isCancelled, self.connectionState != .connected else { return }
+                    self.snapshots = envelope.sparks
+                    self.lastSnapshotAt = .now
+                }
+                let intervalMs = UInt64(max(self.serverSettings?.pollIntervalMs ?? 2000, 1000))
+                do {
+                    try await Task.sleep(nanoseconds: intervalMs * 1_000_000)
+                } catch {
+                    return
+                }
             }
         }
     }
 
-    func sampleHistory() {
-        guard !snapshots.isEmpty else { return }
-        history.sample(snapshots)
+    private func stopPollingFallback() {
+        pollTask?.cancel()
+        pollTask = nil
     }
 }
 
@@ -271,11 +312,12 @@ final class SettingsStore {
     var showNotifications: Bool
     var temperatureThreshold: Double
     var memoryThreshold: Double
+    var alertCooldownMinutes: Double
 
     init(defaults: UserDefaults = .standard) {
         self.defaults = defaults
         let saved = defaults.data(forKey: key).flatMap { try? JSONDecoder().decode(PersistedSettings.self, from: $0) }
-        endpoint = saved?.endpoint ?? "http://100.101.194.105:5555"
+        endpoint = saved?.endpoint ?? ""
         displayMetric = saved?.displayMetric ?? .gpuUtilization
         sourceMode = saved?.sourceMode ?? .auto
         selectedSparkID = saved?.selectedSparkID
@@ -284,7 +326,8 @@ final class SettingsStore {
         startHidden = saved?.startHidden ?? true
         showNotifications = saved?.showNotifications ?? false
         temperatureThreshold = saved?.temperatureThreshold ?? 85
-        memoryThreshold = saved?.memoryThreshold ?? 90
+        memoryThreshold = saved?.memoryThreshold ?? 85
+        alertCooldownMinutes = saved?.alertCooldownMinutes ?? 15
     }
 
     var alertThresholds: AlertThresholds {
@@ -302,7 +345,8 @@ final class SettingsStore {
             startHidden: startHidden,
             showNotifications: showNotifications,
             temperatureThreshold: temperatureThreshold,
-            memoryThreshold: memoryThreshold
+            memoryThreshold: memoryThreshold,
+            alertCooldownMinutes: alertCooldownMinutes
         )
         guard let data = try? JSONEncoder().encode(value) else { return }
         defaults.set(data, forKey: key)
@@ -319,5 +363,6 @@ final class SettingsStore {
         let showNotifications: Bool
         let temperatureThreshold: Double
         let memoryThreshold: Double
+        let alertCooldownMinutes: Double
     }
 }

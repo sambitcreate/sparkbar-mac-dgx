@@ -4,7 +4,7 @@ import SparkBarCore
 @main
 struct SparkBarSmoke {
     static func main() async {
-        let rawURL = CommandLine.arguments.dropFirst().first ?? "http://100.101.194.105:5555"
+        let rawURL = CommandLine.arguments.dropFirst().first ?? "http://localhost:5555"
         do {
             let endpoint = try SparkDashEndpoint(rawURL)
             let client = SparkDashClient(endpoint: endpoint)
