@@ -29,6 +29,15 @@ final class AppCoordinator {
         guard !didStart else { return }
         didStart = true
         NSApp.setActivationPolicy(.accessory)
+
+        // Single-instance guard: a second launch should exit immediately
+        // instead of stacking identical status items.
+        let bundleID = Bundle.main.bundleIdentifier ?? "com.sparkbar.app"
+        if NSRunningApplication.runningApplications(withBundleIdentifier: bundleID).count > 1 {
+            NSApp.terminate(nil)
+            return
+        }
+
         statusItemController = StatusItemController(model: model, openSettings: { [weak self] in
             self?.openSettings()
         })
@@ -37,6 +46,14 @@ final class AppCoordinator {
             onWake: { [weak self] in Task { @MainActor [weak self] in self?.model.wake() } }
         )
         model.start()
+
+        // "Start hidden" now has real semantics: when off, open the popover
+        // shortly after launch so the dashboard greets the user.
+        if !model.settings.startHidden {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) { [weak self] in
+                self?.statusItemController?.showPopover()
+            }
+        }
     }
 
     func openSettings() {
