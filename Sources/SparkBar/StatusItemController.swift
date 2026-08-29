@@ -9,6 +9,7 @@ final class StatusItemController: NSObject {
     private let statusItem: NSStatusItem
     private let popover: NSPopover
     private let hostingController: NSHostingController<PopoverRootView>
+    private var contextMenu = NSMenu()
     private var pulseTimer: Timer?
     private var pulseVisible = true
 
@@ -45,8 +46,11 @@ final class StatusItemController: NSObject {
 
         if let button = statusItem.button {
             button.target = self
-            button.action = #selector(togglePopover(_:))
-            button.sendAction(on: [.leftMouseUp])
+            button.action = #selector(handleStatusItemClick(_:))
+            // Left click opens the dashboard; right click opens the menu.
+            // Assigning `statusItem.menu` would steal the left click and never
+            // call this action.
+            button.sendAction(on: [.leftMouseUp, .rightMouseUp])
             button.imagePosition = .imageLeft
             button.imageScaling = .scaleProportionallyDown
             button.font = NSFont.monospacedDigitSystemFont(ofSize: 11, weight: .medium)
@@ -54,11 +58,12 @@ final class StatusItemController: NSObject {
         }
         configureMenu()
 
-        popover.behavior = .transient
+        popover.behavior = .semitransient
         popover.animates = true
         popover.contentViewController = hostingController
-        popover.contentSize = NSSize(width: 390, height: 680)
+        popover.contentSize = PopoverRootView.contentSize
         observeModel()
+        updateStatusItem()
     }
 
     private func configureMenu() {
@@ -73,7 +78,21 @@ final class StatusItemController: NSObject {
         let quitItem = NSMenuItem(title: "Quit SparkBar", action: #selector(quitFromMenu), keyEquivalent: "q")
         quitItem.target = self
         menu.addItem(quitItem)
-        statusItem.menu = menu
+        statusItem.menu = nil
+        contextMenu = menu
+    }
+
+    @objc private func handleStatusItemClick(_ sender: Any?) {
+        if NSApp.currentEvent?.type == .rightMouseUp {
+            showContextMenu()
+            return
+        }
+        togglePopover(sender)
+    }
+
+    private func showContextMenu() {
+        guard let button = statusItem.button else { return }
+        contextMenu.popUp(positioning: nil, at: NSPoint(x: 0, y: button.bounds.height), in: button)
     }
 
     @objc private func openSparkDashFromMenu() {
@@ -103,8 +122,23 @@ final class StatusItemController: NSObject {
     }
 
     private func showPopover(relativeTo button: NSStatusBarButton) {
+        guard button.window != nil else {
+            DispatchQueue.main.async { [weak self] in
+                guard let self, let button = self.statusItem.button else { return }
+                self.showPopover(relativeTo: button)
+            }
+            return
+        }
         popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
-        popover.contentViewController?.view.window?.initialFirstResponder = popover.contentViewController?.view
+        // Activate after the popover is attached. Doing it in the same turn
+        // (or making the popover key first) can drop the status-item window
+        // and AppKit then parks the popover at screen origin — bottom left.
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            NSApp.activate(ignoringOtherApps: true)
+            self.popover.contentViewController?.view.window?.makeKey()
+            self.popover.contentViewController?.view.window?.initialFirstResponder = self.popover.contentViewController?.view
+        }
     }
 
     private func observeModel() {
