@@ -1,0 +1,65 @@
+{
+  "type": "snapshot",
+  "refreshInterval": 2000,
+  "sparks": [
+    {
+      "id": "gpu-box",
+      "name": "Studio Host",
+      "kind": "host",
+      "online": true,
+      "uptime": 3600,
+      "lanIp": "192.168.1.20",
+      "tailscaleMonitoring": true,
+      "llmPort": 8888,
+      "llmPorts": [8888],
+      "metrics": {
+        "gpu": {
+          "temperature": 61,
+          "usage": 40,
+          "vram": {
+            "used": 18432,
+            "total": 24576,
+            "available": 6144,
+            "percentage": 75
+          }
+        },
+        "ram": {
+          "used": 32000,
+          "total": 64000,
+          "percentage": 50
+        },
+        "unifiedMemory": {
+          "used": 999,
+          "total": 1000,
+          "percentage": 99,
+          "oomRisk": "high"
+        },
+        "llm": [
+          {
+            "available": true,
+            "backend": "exl3",
+            "modelId": "llama-3",
+            "generationTps": 22.5,
+            "prefillTps": 400,
+            "cachedPrefillTps": 1200,
+            "uncachedPrefillTps": 180
+          }
+        ],
+        "tailscale": {
+          "available": true,
+          "online": true,
+          "backendState": "Running",
+          "hostName": "studio-host",
+          "dnsName": "studio-host.tailnet.ts.net",
+          "tailscaleIp": "100.64.0.12",
+          "relay": null,
+          "keyExpiry": null,
+          "keyExpired": false,
+          "version": "1.80.0",
+          "health": [],
+          "error": null
+        }
+      }
+    }
+  ]
+}

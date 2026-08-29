@@ -87,7 +87,7 @@ public struct AlertEngine: Equatable, Sendable {
         case .highTemperature:
             return "\(snapshot.name) reached \(MetricFormatter.temperature(snapshot.metrics?.gpu?.temperature, unit: temperatureUnit))."
         case .highMemory:
-            return "\(snapshot.name) is using \(MetricFormatter.percent(snapshot.metrics?.unifiedMemory?.percentage)) unified memory."
+            return "\(snapshot.name) is using \(MetricFormatter.percent(snapshot.memoryPressurePercentage)) \(snapshot.memoryNoun)."
         case .oomRisk:
             return "\(snapshot.name) reports a high memory OOM risk."
         case .thermalThrottle:

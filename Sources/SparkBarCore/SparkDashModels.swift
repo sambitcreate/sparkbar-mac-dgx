@@ -13,29 +13,38 @@ public struct SparkListResponse: Decodable, Equatable, Sendable {
 public struct SparkConfiguration: Decodable, Equatable, Identifiable, Sendable {
     public let id: String
     public let name: String
+    /// sparkDash 1.8+ unit type: `"spark"` (DGX Spark) or `"host"` (dedicated GPU Linux box).
+    public let kind: String?
     public let lanIp: String?
     public let llmPorts: [Int]?
     public let llmMonitoring: Bool?
     public let comfyMonitoring: Bool?
     public let comfyPort: Int?
+    public let tailscaleMonitoring: Bool?
 
     public init(
         id: String,
         name: String,
+        kind: String? = nil,
         lanIp: String? = nil,
         llmPorts: [Int]? = nil,
         llmMonitoring: Bool? = nil,
         comfyMonitoring: Bool? = nil,
-        comfyPort: Int? = nil
+        comfyPort: Int? = nil,
+        tailscaleMonitoring: Bool? = nil
     ) {
         self.id = id
         self.name = name
+        self.kind = kind
         self.lanIp = lanIp
         self.llmPorts = llmPorts
         self.llmMonitoring = llmMonitoring
         self.comfyMonitoring = comfyMonitoring
         self.comfyPort = comfyPort
+        self.tailscaleMonitoring = tailscaleMonitoring
     }
+
+    public var isGPUHost: Bool { SparkSnapshot.isGPUHost(kind: kind) }
 }
 
 public struct SnapshotEnvelope: Decodable, Equatable, Sendable {
@@ -64,6 +73,8 @@ public struct SnapshotEnvelope: Decodable, Equatable, Sendable {
 public struct SparkSnapshot: Decodable, Equatable, Identifiable, Sendable {
     public let id: String
     public let name: String
+    /// sparkDash 1.8+ unit type: `"spark"` or `"host"`. Missing/unknown values are treated as Spark.
+    public let kind: String?
     public let online: Bool?
     public let uptime: Double?
     public let lanIp: String?
@@ -81,6 +92,7 @@ public struct SparkSnapshot: Decodable, Equatable, Identifiable, Sendable {
     public let llmApiKeyPorts: [Int]?
     public let comfyMonitoring: Bool?
     public let comfyPort: Int?
+    public let tailscaleMonitoring: Bool?
     public let hermes: HermesMetrics?
     public let hardware: HardwareInfo?
     public let metrics: SparkMetrics?
@@ -88,6 +100,7 @@ public struct SparkSnapshot: Decodable, Equatable, Identifiable, Sendable {
     public init(
         id: String,
         name: String,
+        kind: String? = nil,
         online: Bool? = nil,
         uptime: Double? = nil,
         lanIp: String? = nil,
@@ -105,12 +118,14 @@ public struct SparkSnapshot: Decodable, Equatable, Identifiable, Sendable {
         llmApiKeyPorts: [Int]? = nil,
         comfyMonitoring: Bool? = nil,
         comfyPort: Int? = nil,
+        tailscaleMonitoring: Bool? = nil,
         hermes: HermesMetrics? = nil,
         hardware: HardwareInfo? = nil,
         metrics: SparkMetrics? = nil
     ) {
         self.id = id
         self.name = name
+        self.kind = kind
         self.online = online
         self.uptime = uptime
         self.lanIp = lanIp
@@ -128,12 +143,20 @@ public struct SparkSnapshot: Decodable, Equatable, Identifiable, Sendable {
         self.llmApiKeyPorts = llmApiKeyPorts
         self.comfyMonitoring = comfyMonitoring
         self.comfyPort = comfyPort
+        self.tailscaleMonitoring = tailscaleMonitoring
         self.hermes = hermes
         self.hardware = hardware
         self.metrics = metrics
     }
 
     public var isOnline: Bool { online == true }
+
+    /// Dedicated GPU Linux hosts report discrete VRAM, not GB10 unified memory.
+    public var isGPUHost: Bool { Self.isGPUHost(kind: kind) }
+
+    public var usesUnifiedMemory: Bool { !isGPUHost }
+
+    public var memoryNoun: String { isGPUHost ? "VRAM" : "unified memory" }
 
     public var primaryLLM: LLMMetrics? {
         metrics?.llm?.first(where: { $0.available != false }) ?? metrics?.llm?.first
@@ -146,11 +169,40 @@ public struct SparkSnapshot: Decodable, Equatable, Identifiable, Sendable {
     public var gpuUsage: Double { metrics?.gpu?.usage ?? 0 }
 
     public var memoryPercentage: Double {
-        metrics?.unifiedMemory?.percentage
-            ?? metrics?.gpu?.vram?.percentage
-            ?? metrics?.ram?.percentage
-            ?? 0
+        memoryPressurePercentage ?? 0
     }
+
+    public var memoryPressurePercentage: Double? {
+        if isGPUHost {
+            return firstFinite(metrics?.gpu?.vram?.percentage, metrics?.ram?.percentage, metrics?.unifiedMemory?.percentage)
+        }
+        return firstFinite(metrics?.unifiedMemory?.percentage, metrics?.gpu?.vram?.percentage, metrics?.ram?.percentage)
+    }
+
+    public var memoryUsedMB: Double? {
+        if isGPUHost {
+            return firstFinite(metrics?.gpu?.vram?.used, metrics?.ram?.used, metrics?.unifiedMemory?.used)
+        }
+        return firstFinite(metrics?.unifiedMemory?.used, metrics?.gpu?.vram?.used, metrics?.ram?.used)
+    }
+
+    public var memoryTotalMB: Double? {
+        if isGPUHost {
+            return firstFinite(metrics?.gpu?.vram?.total, metrics?.ram?.total, metrics?.unifiedMemory?.total)
+        }
+        return firstFinite(metrics?.unifiedMemory?.total, metrics?.gpu?.vram?.total, metrics?.ram?.total)
+    }
+
+    static func isGPUHost(kind: String?) -> Bool {
+        kind?.caseInsensitiveCompare("host") == .orderedSame
+    }
+}
+
+private func firstFinite(_ values: Double?...) -> Double? {
+    for value in values {
+        if let value, value.isFinite { return value }
+    }
+    return nil
 }
 
 public struct HardwareInfo: Decodable, Equatable, Sendable {
@@ -172,6 +224,7 @@ public struct SparkMetrics: Decodable, Equatable, Sendable {
     public let unifiedMemory: UnifiedMemoryMetrics?
     public let llm: [LLMMetrics]?
     public let comfy: ComfyMetrics?
+    public let tailscale: TailscaleMetrics?
 
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
@@ -183,10 +236,11 @@ public struct SparkMetrics: Decodable, Equatable, Sendable {
         unifiedMemory = try? c.decode(UnifiedMemoryMetrics.self, forKey: .unifiedMemory)
         llm = try c.decodeLossy(LLMMetrics.self, forKey: .llm)
         comfy = try? c.decode(ComfyMetrics.self, forKey: .comfy)
+        tailscale = try? c.decode(TailscaleMetrics.self, forKey: .tailscale)
     }
 
     private enum CodingKeys: String, CodingKey {
-        case gpu, cpu, ram, storage, network, unifiedMemory, llm, comfy
+        case gpu, cpu, ram, storage, network, unifiedMemory, llm, comfy, tailscale
     }
 }
 
@@ -282,6 +336,8 @@ public struct LLMMetrics: Decodable, Equatable, Identifiable, Sendable {
     public let slotsTotal: Int?
     public let generationTps: Double?
     public let prefillTps: Double?
+    public let cachedPrefillTps: Double?
+    public let uncachedPrefillTps: Double?
     public let totalOutputTokens: Int?
     public let kvCacheUsage: Double?
     public let requestsRunning: Int?
@@ -310,6 +366,7 @@ public struct LLMMetrics: Decodable, Equatable, Identifiable, Sendable {
         case available, backend, modelId, model, modelName, modelPath, contextLength
         case gpuMemoryUtilization, gpuMemoryUsage, slotsActive, activeSlots, slotsTotal, totalSlots
         case generationTps, generationTokensPerSecond, prefillTps, prefillTokensPerSecond
+        case cachedPrefillTps, uncachedPrefillTps
         case totalOutputTokens, kvCacheUsage, kvCacheUtilization, requestsRunning, runningRequests
         case requestsWaiting, waitingRequests, ttftP95Seconds, ttftP95, preemptionsTotal, preemptions
         case prefixCacheHitRate, prefixCacheHit, e2eP95Seconds, e2eP95, itlP95Seconds, itlP95
@@ -327,6 +384,8 @@ public struct LLMMetrics: Decodable, Equatable, Identifiable, Sendable {
         slotsTotal: Int? = nil,
         generationTps: Double? = nil,
         prefillTps: Double? = nil,
+        cachedPrefillTps: Double? = nil,
+        uncachedPrefillTps: Double? = nil,
         totalOutputTokens: Int? = nil,
         kvCacheUsage: Double? = nil,
         requestsRunning: Int? = nil,
@@ -351,6 +410,8 @@ public struct LLMMetrics: Decodable, Equatable, Identifiable, Sendable {
         self.slotsTotal = slotsTotal
         self.generationTps = generationTps
         self.prefillTps = prefillTps
+        self.cachedPrefillTps = cachedPrefillTps
+        self.uncachedPrefillTps = uncachedPrefillTps
         self.totalOutputTokens = totalOutputTokens
         self.kvCacheUsage = kvCacheUsage
         self.requestsRunning = requestsRunning
@@ -378,6 +439,8 @@ public struct LLMMetrics: Decodable, Equatable, Identifiable, Sendable {
         slotsTotal = try c.decodeFirst(Int.self, forKeys: [.slotsTotal, .totalSlots])
         generationTps = try c.decodeFirst(Double.self, forKeys: [.generationTps, .generationTokensPerSecond])
         prefillTps = try c.decodeFirst(Double.self, forKeys: [.prefillTps, .prefillTokensPerSecond])
+        cachedPrefillTps = try c.decodeIfPresent(Double.self, forKey: .cachedPrefillTps)
+        uncachedPrefillTps = try c.decodeIfPresent(Double.self, forKey: .uncachedPrefillTps)
         totalOutputTokens = try c.decodeIfPresent(Int.self, forKey: .totalOutputTokens)
         kvCacheUsage = try c.decodeFirst(Double.self, forKeys: [.kvCacheUsage, .kvCacheUtilization])
         requestsRunning = try c.decodeFirst(Int.self, forKeys: [.requestsRunning, .runningRequests])
@@ -657,6 +720,21 @@ public struct NetworkInterfaceMetrics: Decodable, Equatable, Identifiable, Senda
     public var isUp: Bool { operstate?.lowercased() == "up" }
 
     public var id: String { name ?? label ?? ip ?? "interface" }
+}
+
+public struct TailscaleMetrics: Decodable, Equatable, Sendable {
+    public let available: Bool?
+    public let online: Bool?
+    public let backendState: String?
+    public let hostName: String?
+    public let dnsName: String?
+    public let tailscaleIp: String?
+    public let relay: String?
+    public let keyExpiry: String?
+    public let keyExpired: Bool?
+    public let version: String?
+    public let health: [String]?
+    public let error: String?
 }
 
 public struct HermesMetrics: Decodable, Equatable, Sendable {

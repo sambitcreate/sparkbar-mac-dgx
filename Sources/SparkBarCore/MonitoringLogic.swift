@@ -94,7 +94,7 @@ public enum SparkAlertReason: String, CaseIterable, Hashable, Codable, Sendable 
         switch self {
         case .offline: return "Spark offline"
         case .highTemperature: return "High temperature"
-        case .highMemory: return "High unified memory"
+        case .highMemory: return "High memory"
         case .oomRisk: return "OOM risk"
         case .thermalThrottle: return "Thermal throttling"
         case .powerLimited: return "Power limited"
@@ -120,6 +120,19 @@ public struct AlertThresholds: Equatable, Sendable {
         self.memoryClearPercentage = memoryClearPercentage
         self.temperatureClearCelsius = temperatureClearCelsius
     }
+
+    /// Derives the hysteresis clear points a fixed margin below the triggers so
+    /// the alert settles without flapping no matter where the user sets the
+    /// trigger. Without this, a trigger below the default clear point would
+    /// silently disable hysteresis.
+    public init(temperatureCelsius: Double, memoryPercentage: Double, clearMargin: Double) {
+        self.init(
+            temperatureCelsius: temperatureCelsius,
+            memoryPercentage: memoryPercentage,
+            memoryClearPercentage: memoryPercentage - clearMargin,
+            temperatureClearCelsius: temperatureCelsius - clearMargin
+        )
+    }
 }
 
 public extension SparkSnapshot {
@@ -138,7 +151,7 @@ public extension SparkSnapshot {
         if memoryPercentage >= thresholds.memoryPercentage {
             reasons.insert(.highMemory)
         }
-        if memoryRisk == "high" || memoryRisk == "critical" {
+        if usesUnifiedMemory, memoryRisk == "high" || memoryRisk == "critical" {
             reasons.insert(.oomRisk)
         }
 
@@ -355,8 +368,8 @@ public enum MenuBarPresenter {
         case .iconOnly: return ""
         case .gpuUtilization: return MetricFormatter.percent(spark.metrics?.gpu?.usage)
         case .gpuTemperature: return MetricFormatter.temperatureShort(spark.metrics?.gpu?.temperature, unit: temperatureUnit)
-        case .unifiedMemory: return MetricFormatter.memoryGigabytesShort(spark.metrics?.unifiedMemory?.used)
-        case .memoryPercentage: return MetricFormatter.percent(spark.metrics?.unifiedMemory?.percentage)
+        case .unifiedMemory: return MetricFormatter.memoryGigabytesShort(spark.memoryUsedMB)
+        case .memoryPercentage: return MetricFormatter.percent(spark.memoryPressurePercentage)
         case .llmTokensPerSecond: return MetricFormatter.tokensPerSecond(spark.primaryLLM?.generationTps)
         case .gpuAndTemperature:
             return "\(MetricFormatter.percent(spark.metrics?.gpu?.usage)) · \(MetricFormatter.temperatureShort(spark.metrics?.gpu?.temperature, unit: temperatureUnit))"
@@ -368,8 +381,8 @@ public enum MenuBarPresenter {
         case .iconOnly: return ""
         case .gpuUtilization: return MetricFormatter.percent(maxGPU)
         case .gpuTemperature: return MetricFormatter.temperatureShort(snapshots.compactMap { $0.metrics?.gpu?.temperature }.max(), unit: temperatureUnit)
-        case .unifiedMemory: return MetricFormatter.memoryGigabytesShort(snapshots.compactMap { $0.metrics?.unifiedMemory?.used }.max())
-        case .memoryPercentage: return MetricFormatter.percent(snapshots.compactMap { $0.metrics?.unifiedMemory?.percentage }.max())
+        case .unifiedMemory: return MetricFormatter.memoryGigabytesShort(snapshots.compactMap(\.memoryUsedMB).max())
+        case .memoryPercentage: return MetricFormatter.percent(snapshots.compactMap(\.memoryPressurePercentage).max())
         case .llmTokensPerSecond: return MetricFormatter.tokensPerSecond(snapshots.compactMap(\.primaryLLM?.generationTps).max())
         case .gpuAndTemperature:
             return "\(MetricFormatter.percent(maxGPU)) · \(MetricFormatter.temperatureShort(snapshots.compactMap { $0.metrics?.gpu?.temperature }.max(), unit: temperatureUnit))"

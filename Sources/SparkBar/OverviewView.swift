@@ -13,7 +13,7 @@ struct OverviewView: View {
                 Text("Overview")
                     .font(.title3.weight(.semibold))
                 Spacer()
-                Text("\(model.snapshots.count) Sparks · \(model.onlineCount) online")
+                Text("\(model.snapshots.count) systems · \(model.onlineCount) online")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
@@ -39,11 +39,11 @@ struct OverviewView: View {
 
     private var aggregateMemory: String {
         guard !onlineSnapshots.isEmpty,
-              onlineSnapshots.allSatisfy({ $0.metrics?.unifiedMemory?.used != nil && $0.metrics?.unifiedMemory?.total != nil }) else {
+              onlineSnapshots.allSatisfy({ $0.memoryUsedMB != nil && $0.memoryTotalMB != nil }) else {
             return "—"
         }
-        let used = onlineSnapshots.compactMap { $0.metrics?.unifiedMemory?.used }.reduce(0, +)
-        let total = onlineSnapshots.compactMap { $0.metrics?.unifiedMemory?.total }.reduce(0, +)
+        let used = onlineSnapshots.compactMap(\.memoryUsedMB).reduce(0, +)
+        let total = onlineSnapshots.compactMap(\.memoryTotalMB).reduce(0, +)
         return "\(MetricFormatter.memory(used, includeUnit: false)) / \(MetricFormatter.memory(total))"
     }
 
@@ -99,6 +99,11 @@ private struct SparkOverviewRow: View {
                 HStack {
                     Text(snapshot.name)
                         .font(.headline)
+                    if snapshot.isGPUHost {
+                        Text("Host")
+                            .font(.caption.weight(.medium))
+                            .foregroundStyle(.secondary)
+                    }
                     Spacer()
                     Image(systemName: "chevron.right")
                         .font(.caption.weight(.semibold))
@@ -109,7 +114,7 @@ private struct SparkOverviewRow: View {
                     HStack(spacing: 12) {
                         CompactValue(label: "GPU", value: MetricFormatter.percent(snapshot.metrics?.gpu?.usage))
                         CompactValue(label: "Temp", value: MetricFormatter.temperatureShort(snapshot.metrics?.gpu?.temperature, unit: temperatureUnit))
-                        CompactValue(label: "Memory", value: MetricFormatter.percent(snapshot.metrics?.unifiedMemory?.percentage))
+                        CompactValue(label: "Memory", value: MetricFormatter.percent(snapshot.memoryPressurePercentage))
                     }
                     if snapshot.role == "worker" {
                         Text("Worker node · \(snapshot.workerLabel ?? "no label")")
@@ -139,7 +144,7 @@ private struct SparkOverviewRow: View {
 
     private var rowLabel: String {
         if !snapshot.isOnline { return "\(snapshot.name), offline" }
-        return "\(snapshot.name), GPU \(MetricFormatter.percent(snapshot.metrics?.gpu?.usage)), \(MetricFormatter.temperature(snapshot.metrics?.gpu?.temperature, unit: temperatureUnit)), memory \(MetricFormatter.percent(snapshot.metrics?.unifiedMemory?.percentage))"
+        return "\(snapshot.name), GPU \(MetricFormatter.percent(snapshot.metrics?.gpu?.usage)), \(MetricFormatter.temperature(snapshot.metrics?.gpu?.temperature, unit: temperatureUnit)), memory \(MetricFormatter.percent(snapshot.memoryPressurePercentage))"
     }
 }
 

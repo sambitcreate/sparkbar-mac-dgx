@@ -15,7 +15,7 @@ struct SparkDetailView: View {
             DetailHeader(snapshot: snapshot, isServerLive: isServerLive, isPolling: isPolling)
             if snapshot.isOnline {
                 GPUCard(snapshot: snapshot, temperatureUnit: temperatureUnit)
-                UnifiedMemoryCard(snapshot: snapshot)
+                MemoryCard(snapshot: snapshot)
                 SystemSummary(snapshot: snapshot, temperatureUnit: temperatureUnit)
                 if !history.isEmpty {
                     HistoryChart(history: history)
@@ -33,6 +33,10 @@ struct SparkDetailView: View {
                 if let hermes = snapshot.hermes, hermes.monitoring == true {
                     SectionTitle("Hermes Agent", systemImage: "sparkles")
                     HermesCard(hermes: hermes)
+                }
+                if snapshot.tailscaleMonitoring == true || snapshot.metrics?.tailscale != nil {
+                    SectionTitle("Tailscale", systemImage: "network")
+                    TailscaleCard(metrics: snapshot.metrics?.tailscale)
                 }
                 if let processes = snapshot.metrics?.gpu?.processes, !processes.isEmpty {
                     SectionTitle("GPU Processes", systemImage: "list.bullet.rectangle")
@@ -86,7 +90,11 @@ private struct DetailHeader: View {
             }
             .font(.caption)
             .foregroundStyle(isServerLive || isPolling ? Color.secondary : Color.orange)
-            if snapshot.role == "worker" {
+            if snapshot.isGPUHost {
+                Label("GPU host", systemImage: "server.rack")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            } else if snapshot.role == "worker" {
                 Label("Worker node · \(snapshot.workerLabel ?? "no label")", systemImage: "square.3.layers.3d")
                     .font(.caption)
                     .foregroundStyle(.secondary)
@@ -149,12 +157,20 @@ private struct GPUCard: View {
     }
 }
 
-private struct UnifiedMemoryCard: View {
+private struct MemoryCard: View {
     let snapshot: SparkSnapshot
 
     var body: some View {
+        if snapshot.isGPUHost {
+            hostVRAMCard
+        } else {
+            unifiedMemoryCard
+        }
+    }
+
+    private var unifiedMemoryCard: some View {
         let memory = snapshot.metrics?.unifiedMemory
-        VStack(alignment: .leading, spacing: 8) {
+        return VStack(alignment: .leading, spacing: 8) {
             SectionTitle("Unified Memory", systemImage: "memorychip")
             HStack(alignment: .firstTextBaseline) {
                 Text("\(MetricFormatter.memory(memory?.used, includeUnit: false)) / \(MetricFormatter.memory(memory?.total))")
@@ -179,6 +195,27 @@ private struct UnifiedMemoryCard: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
+        }
+        .metricCard()
+    }
+
+    private var hostVRAMCard: some View {
+        let vram = snapshot.metrics?.gpu?.vram
+        return VStack(alignment: .leading, spacing: 8) {
+            SectionTitle("VRAM", systemImage: "memorychip")
+            HStack(alignment: .firstTextBaseline) {
+                Text("\(MetricFormatter.memory(vram?.used, includeUnit: false)) / \(MetricFormatter.memory(vram?.total))")
+                    .font(.title3.weight(.semibold).monospacedDigit())
+                Spacer()
+                Text(MetricFormatter.percent(vram?.percentage))
+                    .font(.headline.monospacedDigit())
+            }
+            if let percentage = vram?.percentage {
+                ProgressView(value: percentage / 100)
+            }
+            Text("\(MetricFormatter.memory(vram?.available)) available")
+                .font(.caption)
+                .foregroundStyle(.secondary)
         }
         .metricCard()
     }
@@ -253,6 +290,13 @@ private struct LLMCard: View {
                 MetricPair(label: "Requests", value: "\(llm.requestsRunning.map(String.init) ?? "—") / \(llm.requestsWaiting.map(String.init) ?? "—")")
                 Spacer()
                 MetricPair(label: "KV cache", value: MetricFormatter.percent(llm.kvCacheUsage))
+            }
+            if llm.cachedPrefillTps != nil || llm.uncachedPrefillTps != nil {
+                HStack {
+                    MetricPair(label: "Cached prefill", value: MetricFormatter.tokensPerSecond(llm.cachedPrefillTps))
+                    Spacer()
+                    MetricPair(label: "Uncached prefill", value: MetricFormatter.tokensPerSecond(llm.uncachedPrefillTps))
+                }
             }
             HStack {
                 MetricPair(label: "Slots", value: "\(llm.slotsActive.map(String.init) ?? "—") / \(llm.slotsTotal.map(String.init) ?? "—")")
@@ -500,10 +544,22 @@ private struct SectionTitle: View {
 private struct HistoryChart: View {
     let history: [MetricHistoryPoint]
 
+    /// The store keeps up to 900 samples per spark; rendering every point of
+    /// both series on each snapshot is wasted work in a 120 pt chart.
+    /// Evenly-spaced sampling keeps the first and last points so the time
+    /// range stays truthful.
+    private static let renderLimit = 240
+
+    private var renderPoints: [MetricHistoryPoint] {
+        guard history.count > Self.renderLimit else { return history }
+        let step = Double(history.count - 1) / Double(Self.renderLimit - 1)
+        return (0..<Self.renderLimit).map { history[Int((Double($0) * step).rounded())] }
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             SectionTitle("Recent history", systemImage: "chart.xyaxis.line")
-            Chart(history) { point in
+            Chart(renderPoints) { point in
                 if let gpu = point.gpuUsage {
                     LineMark(x: .value("Time", point.date), y: .value("Value", gpu))
                         .foregroundStyle(by: .value("Metric", "GPU"))
@@ -557,6 +613,51 @@ private struct HermesCard: View {
             }
         }
         .metricCard()
+    }
+}
+
+private struct TailscaleCard: View {
+    let metrics: TailscaleMetrics?
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(alignment: .firstTextBaseline) {
+                Text(metrics?.hostName ?? metrics?.dnsName ?? "Tailnet")
+                    .font(.headline)
+                Spacer()
+                Text(statusText)
+                    .font(.caption.weight(.medium))
+                    .foregroundStyle(metrics?.online == true ? .green : .secondary)
+            }
+            if let ip = metrics?.tailscaleIp {
+                Text(ip)
+                    .font(.caption.monospaced())
+                    .foregroundStyle(.secondary)
+            }
+            if let relay = metrics?.relay, !relay.isEmpty {
+                Text("Relay \(relay)")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            if metrics?.keyExpired == true {
+                Label("Key expired", systemImage: "exclamationmark.triangle.fill")
+                    .font(.caption.weight(.medium))
+                    .foregroundStyle(.orange)
+            }
+            if let error = metrics?.error, !error.isEmpty {
+                Text(error)
+                    .font(.caption)
+                    .foregroundStyle(.orange)
+            }
+        }
+        .metricCard()
+    }
+
+    private var statusText: String {
+        if metrics?.available != true { return "Unavailable" }
+        if metrics?.online == true { return "Online" }
+        if let state = metrics?.backendState, !state.isEmpty { return state }
+        return "Offline"
     }
 }
 

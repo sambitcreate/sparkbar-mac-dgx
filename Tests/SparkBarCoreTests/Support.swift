@@ -20,14 +20,19 @@ func makeSnapshot(
     id: String,
     name: String,
     online: Bool? = true,
+    kind: String? = nil,
     gpu: Double? = nil,
     temperature: Double? = nil,
     memory: Double? = nil,
+    vram: Double? = nil,
     llm: Double? = nil
 ) -> SparkSnapshot {
     var gpuObject: [String: Any] = [:]
     if let gpu { gpuObject["usage"] = gpu }
     if let temperature { gpuObject["temperature"] = temperature }
+    if let vram {
+        gpuObject["vram"] = ["percentage": vram, "used": vram * 100, "total": 10_000]
+    }
     var memoryObject: [String: Any] = [:]
     if let memory { memoryObject["percentage"] = memory }
     var metricsObject: [String: Any] = ["gpu": gpuObject, "unifiedMemory": memoryObject]
@@ -36,6 +41,7 @@ func makeSnapshot(
     }
     var object: [String: Any] = ["id": id, "name": name, "metrics": metricsObject]
     if let online { object["online"] = online }
+    if let kind { object["kind"] = kind }
     let data = try! JSONSerialization.data(withJSONObject: object)
     return try! JSONDecoder().decode(SparkSnapshot.self, from: data)
 }

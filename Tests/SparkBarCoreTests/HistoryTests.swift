@@ -34,4 +34,11 @@ struct HistoryTests {
         #expect(history.samples(for: "one").isEmpty)
         #expect(history.samples(for: "two").count == 2)
     }
+
+    @Test func samplesHostVRAMPercentageInsteadOfUnifiedMemory() {
+        var history = HistoryStore(maxSamples: 10)
+        let host = makeSnapshot(id: "box", name: "Studio", kind: "host", memory: 11, vram: 75)
+        history.sample([host], at: Date(timeIntervalSince1970: 1))
+        #expect(history.samples(for: "box").first?.memoryPercentage == 75)
+    }
 }

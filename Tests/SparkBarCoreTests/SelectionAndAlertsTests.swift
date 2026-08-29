@@ -145,4 +145,57 @@ struct SelectionAndAlertsTests {
         #expect(presentation.iconName == "bolt.badge.clock")
         #expect(presentation.isDimmed)
     }
+
+    @Test func derivedClearThresholdsKeepHysteresisBelowCustomTriggers() {
+        // A trigger below the default clear point (80) would silently disable
+        // hysteresis; the margin-based initializer derives a working band.
+        let thresholds = AlertThresholds(temperatureCelsius: 70, memoryPercentage: 60, clearMargin: 5)
+        #expect(thresholds.temperatureClearCelsius == 65)
+        #expect(thresholds.memoryClearPercentage == 55)
+
+        var engine = AlertEngine(thresholds: thresholds, cooldown: 60)
+        let hot = makeSnapshot(id: "hot", name: "Hot", temperature: 71, memory: 61)
+        let warm = makeSnapshot(id: "hot", name: "Hot", temperature: 66, memory: 56)
+        let cool = makeSnapshot(id: "hot", name: "Hot", temperature: 64, memory: 54)
+        let start = Date(timeIntervalSince1970: 100)
+        #expect(engine.evaluate(snapshots: [hot], at: start).count == 2)
+        // Inside the derived band the alerts stay latched without refiring.
+        #expect(engine.evaluate(snapshots: [warm], at: start.addingTimeInterval(1)).isEmpty)
+        // Below the band they clear, and a new spike refires.
+        #expect(engine.evaluate(snapshots: [cool], at: start.addingTimeInterval(2)).isEmpty)
+        #expect(engine.evaluate(snapshots: [hot], at: start.addingTimeInterval(3)).count == 2)
+    }
+
+    @Test func hostHighVRAMAlertsWithoutUnifiedMemoryOOM() {
+        let host = makeSnapshot(id: "box", name: "Studio", kind: "host", memory: 99, vram: 90)
+        #expect(host.memoryPercentage == 90)
+        #expect(host.alertReasons().contains(.highMemory))
+        #expect(host.alertReasons().contains(.oomRisk) == false)
+
+        var engine = AlertEngine(thresholds: AlertThresholds(memoryPercentage: 85), cooldown: 60)
+        let events = engine.evaluate(snapshots: [host], at: Date(timeIntervalSince1970: 100))
+        #expect(events.map(\.reason) == [.highMemory])
+        #expect(events.first?.title == "High memory")
+        #expect(events.first?.body == "Studio is using 90% VRAM.")
+    }
+
+    @Test func presenterUsesHostVRAMForMemoryMetrics() {
+        let host = makeSnapshot(id: "box", name: "Studio", kind: "host", vram: 75)
+        let used = MenuBarPresenter.make(
+            snapshots: [host],
+            connectionState: .connected,
+            metric: .unifiedMemory,
+            sourceMode: .auto,
+            selectedID: "box"
+        )
+        #expect(used.title == MetricFormatter.memoryGigabytesShort(7_500))
+        let percent = MenuBarPresenter.make(
+            snapshots: [host],
+            connectionState: .connected,
+            metric: .memoryPercentage,
+            sourceMode: .auto,
+            selectedID: "box"
+        )
+        #expect(percent.title == "75%")
+    }
 }

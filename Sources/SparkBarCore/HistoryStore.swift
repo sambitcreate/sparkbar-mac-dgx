@@ -50,7 +50,7 @@ public struct HistoryStore: Equatable, Sendable {
                 gpuUsage: snapshot.metrics?.gpu?.usage,
                 temperature: snapshot.metrics?.gpu?.temperature,
                 power: snapshot.metrics?.gpu?.power?.draw,
-                memoryPercentage: snapshot.metrics?.unifiedMemory?.percentage,
+                memoryPercentage: snapshot.memoryPressurePercentage,
                 llmTokensPerSecond: snapshot.primaryLLM?.generationTps
             )
             var samples = samplesBySparkID[snapshot.id, default: []]

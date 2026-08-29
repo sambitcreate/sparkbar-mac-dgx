@@ -23,6 +23,7 @@ struct ModelDecodingTests {
         let configurations = try JSONDecoder().decode(SparkListResponse.self, from: TestFixtures.data("sparks"))
         #expect(configurations.sparks.map(\.id) == ["dgx1"])
         #expect(configurations.sparks.first?.llmPorts == [8888])
+        #expect(configurations.sparks.first?.isGPUHost == false)
         let settings = try JSONDecoder().decode(SparkDashSettings.self, from: TestFixtures.data("settings"))
         #expect(settings.pollIntervalMs == 1000)
         #expect(settings.temperatureUnit == "celsius")
@@ -49,5 +50,30 @@ struct ModelDecodingTests {
         #expect(envelope.sparks.count == 2)
         #expect(envelope.sparks[1].metrics?.llm?.count == 1)
         #expect(envelope.sparks[1].metrics?.llm?.first?.modelId == "valid")
+    }
+
+    @Test func decodesGPUHostSnapshotWithTailscaleAndPrefillSplit() throws {
+        let envelope = try TestFixtures.decodeEnvelope("snapshot-host")
+        let host = try #require(envelope.sparks.first)
+        #expect(host.kind == "host")
+        #expect(host.isGPUHost)
+        #expect(host.usesUnifiedMemory == false)
+        #expect(host.memoryNoun == "VRAM")
+        #expect(host.memoryPercentage == 75)
+        #expect(host.memoryUsedMB == 18432)
+        #expect(host.tailscaleMonitoring == true)
+        #expect(host.metrics?.tailscale?.online == true)
+        #expect(host.metrics?.tailscale?.tailscaleIp == "100.64.0.12")
+        let llm = try #require(host.primaryLLM)
+        #expect(llm.backend == "exl3")
+        #expect(llm.cachedPrefillTps == 1200)
+        #expect(llm.uncachedPrefillTps == 180)
+    }
+
+    @Test func sparkKindStillPrefersUnifiedMemoryOverVRAM() throws {
+        let spark = makeSnapshot(id: "spark", name: "Spark", memory: 40, vram: 90)
+        #expect(spark.isGPUHost == false)
+        #expect(spark.memoryPercentage == 40)
+        #expect(spark.memoryNoun == "unified memory")
     }
 }
