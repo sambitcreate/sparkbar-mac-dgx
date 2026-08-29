@@ -1,9 +1,12 @@
 name: Release macOS
 
+# Releases are intentional events: pushing a version tag (v*) publishes that
+# version, and manual dispatch builds a development release numbered
+# 0.1.<run number>. Plain pushes to main no longer publish releases.
 on:
   push:
-    branches:
-      - main
+    tags:
+      - "v*"
   workflow_dispatch:
 
 permissions:
@@ -19,13 +22,32 @@ jobs:
     runs-on: macos-26
     timeout-minutes: 60
     env:
-      SPARKBAR_VERSION: 0.1.${{ github.run_number }}
       SPARKBAR_BUILD: ${{ github.run_number }}
       MACOS_SIGNING_ENABLED: ${{ vars.MACOS_SIGNING_ENABLED || 'false' }}
       MACOS_SIGNING_IDENTITY: ${{ vars.MACOS_SIGNING_IDENTITY }}
     steps:
       - name: Check out source
         uses: actions/checkout@v6
+
+      - name: Resolve version
+        run: |
+          set -euo pipefail
+          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
+            version="${GITHUB_REF_NAME#v}"
+          else
+            version="0.1.${GITHUB_RUN_NUMBER}"
+          fi
+          echo "Resolved SparkBar version $version"
+          echo "SPARKBAR_VERSION=$version" >> "$GITHUB_ENV"
+
+      - name: Cache SwiftPM build
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/Library/Caches/org.swift.swiftpm
+            .build
+          key: ${{ runner.os }}-spm-${{ hashFiles('Package.swift', 'Package.resolved') }}
+          restore-keys: ${{ runner.os }}-spm-
 
       - name: Run tests
         run: swift test
