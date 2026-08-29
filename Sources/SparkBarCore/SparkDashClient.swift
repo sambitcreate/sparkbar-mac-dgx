@@ -162,27 +162,39 @@ public actor SparkDashClient {
     }
 
     /// REST fallback for when the WebSocket is blocked but the API is not.
-    /// Fetches the per-spark metrics endpoint and wraps them in the same
-    /// envelope shape the WebSocket delivers, skipping sparks that fail.
+    /// Fetches the per-spark metrics endpoints concurrently — a slow or offline
+    /// Spark must not stall the whole fleet behind a chain of timeouts — and
+    /// wraps them in the same envelope shape the WebSocket delivers, skipping
+    /// sparks that fail. Results keep the caller's spark order.
     public func pollSnapshot(sparkIDs: [String]) async throws -> SnapshotEnvelope {
-        var snapshots: [SparkSnapshot] = []
-        snapshots.reserveCapacity(sparkIDs.count)
-        for id in sparkIDs {
-            let request = URLRequest(url: endpoint.apiURL(path: "/api/sparks/\(id)/metrics"))
-            do {
-                let (data, response) = try await session.data(for: request)
-                guard let httpResponse = response as? HTTPURLResponse,
-                      (200..<300).contains(httpResponse.statusCode) else {
-                    continue
-                }
-                if let snapshot = try? decoder.decode(SparkSnapshot.self, from: data) {
-                    snapshots.append(snapshot)
-                }
-            } catch {
-                continue
+        let indexed: [(Int, SparkSnapshot)] = await withTaskGroup(of: (Int, SparkSnapshot?).self) { group in
+            for (index, id) in sparkIDs.enumerated() {
+                group.addTask { (index, await self.fetchMetricsSnapshot(sparkID: id)) }
             }
+            var collected: [(Int, SparkSnapshot)] = []
+            collected.reserveCapacity(sparkIDs.count)
+            for await (index, snapshot) in group {
+                if let snapshot {
+                    collected.append((index, snapshot))
+                }
+            }
+            return collected.sorted { $0.0 < $1.0 }
         }
-        return SnapshotEnvelope(type: "snapshot", sparks: snapshots, refreshInterval: nil)
+        return SnapshotEnvelope(type: "snapshot", sparks: indexed.map(\.1), refreshInterval: nil)
+    }
+
+    private func fetchMetricsSnapshot(sparkID: String) async -> SparkSnapshot? {
+        let request = URLRequest(url: endpoint.apiURL(path: "/api/sparks/\(sparkID)/metrics"))
+        do {
+            let (data, response) = try await session.data(for: request)
+            guard let httpResponse = response as? HTTPURLResponse,
+                  (200..<300).contains(httpResponse.statusCode) else {
+                return nil
+            }
+            return try? decoder.decode(SparkSnapshot.self, from: data)
+        } catch {
+            return nil
+        }
     }
 
     private func runLoop() async {
