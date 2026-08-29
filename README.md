@@ -54,7 +54,7 @@ cd sparkDash
 docker compose up --build -d
 ```
 
-Then point SparkBar at your sparkDash address: `http://localhost:5555` when sparkDash runs on the same Mac, or `http://<host-ip>:5555` over LAN or Tailscale for a remote DGX. For a development checkout of sparkDash, use `npm install` followed by `npm run dev`. See the [sparkDash quick start](https://github.com/MiaAI-Lab/sparkDash#quick-start) for the complete setup and DGX configuration.
+Then point SparkBar at your sparkDash address: `http://localhost:5555` when sparkDash runs on the same Mac, or `http://<host-ip>:5555` over LAN or Tailscale. From sparkDash 1.8.2 the server binds to `127.0.0.1` by default; a menu-bar client on another Mac needs `BIND_HOST=0.0.0.0` (or Docker Compose, which already binds `0.0.0.0`). For a development checkout of sparkDash, use `npm install` followed by `npm run dev`. See the [sparkDash quick start](https://github.com/MiaAI-Lab/sparkDash#quick-start) for the complete setup.
 
 SparkBar accepts any `http://`, `https://`, `ws://`, or `wss://` base URL; HTTP maps to WS and HTTPS maps to WSS automatically.
 
@@ -75,7 +75,7 @@ swift run SparkBarSmoke http://localhost:5555
 ## CI, releases, and signing
 
 - `CI` runs on pull requests and pushes to `main` on a macOS 26 runner: Swift test suite, packaged app build, and bundle validation. Changes to only `.md` files skip the verification job.
-- `Release macOS` runs on every push to `main`, builds version `0.1.<run number>`, uploads the app as a workflow artifact, and publishes a GitHub release with a SHA-256 checksum.
+- `Release macOS` runs on version tags (`v*`) and via manual dispatch from the Actions tab. Tag pushes publish the tagged version (`v1.2.3` ships as `1.2.3`); manual runs build `0.1.<run number>` as a development release. Both upload the app as a workflow artifact and publish a GitHub release with a SHA-256 checksum.
 - Releases are ad-hoc signed by default. With `MACOS_SIGNING_ENABLED=true` and the signing/notarization credentials configured, the same pipeline switches to Developer ID Application signing, Apple notarization, ticket stapling, and Gatekeeper verification — the path the upcoming signed DMG ships through.
 - `Pullfrog` is available via manual workflow dispatch; add at least one provider key (e.g. `OPENAI_API_KEY`) as a repository Actions secret first. It is intentionally not attached to `pull_request`, so provider secrets are never exposed to fork code.
 
@@ -97,3 +97,7 @@ And these repository variables:
 Create the Developer ID Application certificate in [Apple Developer Certificates](https://developer.apple.com/help/account/certificates/create-developer-id-certificates), export it with its private key from Keychain Access, and create the App Store Connect API key from [Users and Access](https://appstoreconnect.apple.com/access/integrations/api). Never commit the `.p12`, `.p8`, certificate password, or API credentials. Apple requires Developer ID signing, hardened runtime, and a secure timestamp for notarized software; the workflow applies all three before submitting with `notarytool`.
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for local verification commands and pull request expectations.
+
+## License
+
+SparkBar is available under the [MIT License](LICENSE).
