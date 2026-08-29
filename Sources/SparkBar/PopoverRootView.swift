@@ -4,6 +4,10 @@ import SparkBarCore
 import SwiftUI
 
 struct PopoverRootView: View {
+    /// Single source of truth for the popover dimensions; the status item
+    /// controller sizes its NSPopover from this.
+    static let contentSize = CGSize(width: 390, height: 680)
+
     @Bindable var model: AppModel
     let openSettings: () -> Void
     @State private var selectedSection: DashboardSection = .overview
@@ -55,12 +59,23 @@ struct PopoverRootView: View {
             Divider()
             FooterView(model: model, openSettings: openSettings)
         }
-        .frame(width: 390, height: 680)
+        .frame(width: Self.contentSize.width, height: Self.contentSize.height)
         .background(.regularMaterial)
         .onChange(of: model.snapshots.map(\.id), initial: true) { _, ids in
             if case .spark(let id) = selectedSection, !ids.contains(id) {
                 selectedSection = .overview
             }
+        }
+        .onChange(of: model.focusedSparkID) { _, focusedID in
+            // Notification taps ask the popover to jump straight to the
+            // alerting spark's detail page.
+            guard let focusedID else { return }
+            if model.snapshots.contains(where: { $0.id == focusedID }) {
+                selectedSection = .spark(focusedID)
+            }
+            // Consume even when the spark is momentarily absent so a stale
+            // value cannot swallow the next tap for the same spark.
+            model.clearFocus()
         }
     }
 
@@ -277,7 +292,7 @@ private struct SparkDashSetupCard: View {
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .background(.black.opacity(0.18), in: RoundedRectangle(cornerRadius: 8))
 
-            Text("Then connect to http://<sparkDash-host>:5555. For development, use npm install followed by npm run dev instead.")
+            Text("Then connect to http://<sparkDash-host>:5555. sparkDash 1.8.2+ binds to 127.0.0.1 by default, so a remote Mac needs BIND_HOST=0.0.0.0 or Docker Compose. For development, use npm install followed by npm run dev instead.")
                 .font(.caption2)
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
@@ -306,7 +321,7 @@ private struct NoSparksView: View {
                 .accessibilityHidden(true)
             Text("No Sparks configured")
                 .font(.title3.weight(.semibold))
-            Text("Connected to sparkDash, but it has no DGX Spark systems configured yet.")
+            Text("Connected to sparkDash, but it has no Sparks or GPU hosts configured yet.")
                 .font(.callout)
                 .foregroundStyle(.secondary)
                 .multilineTextAlignment(.center)

@@ -16,6 +16,12 @@ final class AppModel {
     private(set) var connectionState: ConnectionState = .disconnected
     private(set) var lastSnapshotAt: Date?
     private(set) var lastError: String?
+    /// Transport chatter (malformed frames, reconnect reasons). Kept separate
+    /// from `lastError` so routine noise never masks the user-facing message.
+    private(set) var lastDiagnostic: String?
+    /// Set by `focusSpark(_:)` (e.g. a notification tap) to ask the popover to
+    /// navigate to a spark's detail page. Consumed and cleared by the view.
+    private(set) var focusedSparkID: String?
     private(set) var history = HistoryStore(maxSamples: 900)
 
     var selectedSparkID: String? {
@@ -72,7 +78,7 @@ final class AppModel {
         if let selectedSparkID, let selected = snapshots.first(where: { $0.id == selectedSparkID }) {
             return selected
         }
-        return SparkSelector.auto(snapshots: snapshots, selectedID: selectedSparkID)
+        return SparkSelector.auto(snapshots: snapshots, selectedID: selectedSparkID, thresholds: settings.alertThresholds)
     }
 
     var onlineCount: Int { snapshots.filter(\.isOnline).count }
@@ -182,13 +188,25 @@ final class AppModel {
             logger.info("Received snapshot with \(envelope.sparks.count) Spark(s)")
             applySnapshot(envelope)
         case .diagnostic(let message):
-            lastError = message
+            lastDiagnostic = message
             logger.error("Transport diagnostic: \(message, privacy: .public)")
         }
     }
 
     func setSelectedSpark(_ id: String?) {
         selectedSparkID = id
+    }
+
+    /// Selects a spark and asks the popover to open its detail page. Used by
+    /// notification taps, where a bare selection change would leave the user
+    /// on the overview.
+    func focusSpark(_ id: String) {
+        setSelectedSpark(id)
+        focusedSparkID = id
+    }
+
+    func clearFocus() {
+        focusedSparkID = nil
     }
 
     func setLaunchAtLogin(_ enabled: Bool) {
@@ -218,9 +236,16 @@ final class AppModel {
     }
 
     func sleep() {
+        // Stop the event consumer and the REST polling fallback too, not just
+        // the WebSocket client: polling against a stopped client would keep
+        // refreshing snapshots (and could fire alerts) while the Mac sleeps.
+        eventTask?.cancel()
+        eventTask = nil
+        stopPollingFallback()
         if let client {
             Task { await client.stop() }
         }
+        client = nil
         connectionState = .disconnected
     }
 
@@ -282,7 +307,12 @@ final class AppModel {
                 if !ids.isEmpty,
                    let envelope = try? await client.pollSnapshot(sparkIDs: ids),
                    !envelope.sparks.isEmpty {
-                    guard !Task.isCancelled, self.connectionState != .connected else { return }
+                    guard !Task.isCancelled, self.connectionState != .connected else {
+                        // Exiting here would otherwise leave `pollTask` non-nil
+                        // and block the next fallback start.
+                        self.pollTask = nil
+                        return
+                    }
                     self.applySnapshot(envelope)
                 }
                 let intervalMs = UInt64(max(self.serverSettings?.pollIntervalMs ?? 2000, 1000))
@@ -336,7 +366,7 @@ final class SettingsStore {
     }
 
     var alertThresholds: AlertThresholds {
-        AlertThresholds(temperatureCelsius: temperatureThreshold, memoryPercentage: memoryThreshold)
+        AlertThresholds(temperatureCelsius: temperatureThreshold, memoryPercentage: memoryThreshold, clearMargin: 5)
     }
 
     func persist() {

@@ -92,6 +92,16 @@ struct SettingsView: View {
                         get: { model.settings.launchAtLogin },
                         set: { model.setLaunchAtLogin($0) }
                     ))
+                    if model.launchAtLoginService.needsApproval {
+                        HStack {
+                            Label("macOS requires approval before SparkBar can launch at login.", systemImage: "exclamationmark.triangle")
+                                .font(.caption)
+                                .foregroundStyle(.orange)
+                            Spacer()
+                            Button("Open Login Items Settings") { model.launchAtLoginService.openSystemSettings() }
+                                .font(.caption)
+                        }
+                    }
                     Toggle("Start hidden", isOn: Binding(
                         get: { model.settings.startHidden },
                         set: { model.settings.startHidden = $0; model.settings.persist() }

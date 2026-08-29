@@ -24,6 +24,8 @@ final class AppCoordinator {
     private var settingsWindowController: NSWindowController?
     private let sleepWakeMonitor = SleepWakeMonitor()
     private var didStart = false
+    // Retained for the process lifetime; the coordinator never deinitializes.
+    private var terminationObserver: NSObjectProtocol?
 
     func start() {
         guard !didStart else { return }
@@ -45,6 +47,17 @@ final class AppCoordinator {
             onSleep: { [weak self] in Task { @MainActor [weak self] in self?.model.sleep() } },
             onWake: { [weak self] in Task { @MainActor [weak self] in self?.model.wake() } }
         )
+        model.notificationService.onSelectSpark = { [weak self] sparkID in
+            self?.model.focusSpark(sparkID)
+            self?.statusItemController?.showPopover()
+        }
+        terminationObserver = NotificationCenter.default.addObserver(
+            forName: NSApplication.willTerminateNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor [weak self] in self?.model.stop() }
+        }
         model.start()
 
         // "Start hidden" now has real semantics: when off, open the popover
