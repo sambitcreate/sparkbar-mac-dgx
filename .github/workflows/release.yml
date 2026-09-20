@@ -21,6 +21,10 @@ jobs:
     name: Build and publish
     runs-on: macos-26
     timeout-minutes: 60
+    # Gate the signing identity behind a protected environment so a release
+    # cannot be published by anyone who merely has write access. Configure the
+    # `release` environment with required reviewers in repository settings.
+    environment: release
     env:
       SPARKBAR_BUILD: ${{ github.run_number }}
       MACOS_SIGNING_ENABLED: ${{ vars.MACOS_SIGNING_ENABLED || 'false' }}
@@ -28,12 +32,30 @@ jobs:
     steps:
       - name: Check out source
         uses: actions/checkout@v6
+        with:
+          # This job holds `contents: write`. Without this the token is written
+          # into .git/config, where the commit-controlled code that `swift test`
+          # and build-app.sh execute could read it and push with it.
+          persist-credentials: false
 
       - name: Resolve version
         run: |
           set -euo pipefail
           if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
             version="${GITHUB_REF_NAME#v}"
+            # A tag named v* also matches vbeta or vnext. Publishing those as
+            # the latest release would outrank a real semantic version.
+            if [[ ! "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+              echo "tag '$GITHUB_REF_NAME' is not v<major>.<minor>.<patch>" >&2
+              exit 1
+            fi
+            # Anchor the release to something in the repository instead of to
+            # whatever the tag happens to say.
+            plist_version=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' Info.plist)
+            if [[ "$version" != "$plist_version" ]]; then
+              echo "tag v$version does not match Info.plist CFBundleShortVersionString $plist_version" >&2
+              exit 1
+            fi
           else
             version="0.1.${GITHUB_RUN_NUMBER}"
           fi
@@ -79,7 +101,8 @@ jobs:
           security import "$certificate_path" \
             -k "$keychain_path" \
             -P "$MACOS_CERTIFICATE_PASSWORD" \
-            -A \
+            -T /usr/bin/codesign \
+            -T /usr/bin/security \
             -t cert \
             -f pkcs12
           security set-key-partition-list \
@@ -125,7 +148,7 @@ jobs:
           app=".build/Release/SparkBar.app"
           archive="dist/SparkBar-${SPARKBAR_VERSION}-macOS.zip"
           mkdir -p dist
-          codesign --force --deep --sign - "$app"
+          codesign --force --sign - "$app"
           codesign --verify --deep --strict "$app"
           ditto -c -k --sequesterRsrc --keepParent "$app" "$archive"
 
@@ -134,6 +157,9 @@ jobs:
           set -euo pipefail
           app=".build/Release/SparkBar.app"
           archive="dist/SparkBar-${SPARKBAR_VERSION}-macOS.zip"
+          # Confirms the packaging step wrote the version we resolved, and that
+          # the archive exists. The tag-to-Info.plist check in "Resolve version"
+          # is what anchors the version to the repository.
           bundle_version=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$app/Contents/Info.plist")
           bundle_build=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$app/Contents/Info.plist")
           test "$bundle_version" = "$SPARKBAR_VERSION"
