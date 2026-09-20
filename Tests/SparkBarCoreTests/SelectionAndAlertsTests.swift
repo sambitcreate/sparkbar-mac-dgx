@@ -39,6 +39,54 @@ struct SelectionAndAlertsTests {
         )
         #expect(offline.severity == .offline)
         #expect(offline.title == "—")
+
+        // PRD 8: an unreachable sparkDash must not be representable as an
+        // offline Spark, so the two states cannot share a glyph.
+        #expect(disconnected.iconName != offline.iconName)
+        #expect(disconnected.iconName == "bolt.horizontal.circle")
+    }
+
+    @Test func menuBarKeepsDisconnectedGlyphAfterLosingConnection() {
+        let online = makeSnapshot(id: "one", name: "One", gpu: 42)
+        for state in [ConnectionState.failed("boom"), .disconnected] {
+            let presentation = MenuBarPresenter.make(
+                snapshots: [online], connectionState: state, metric: .gpuUtilization,
+                sourceMode: .auto, selectedID: "one"
+            )
+            #expect(presentation.severity == .disconnected)
+            #expect(presentation.iconName == "bolt.horizontal.circle")
+            #expect(presentation.isDimmed)
+        }
+        let reconnecting = MenuBarPresenter.make(
+            snapshots: [online], connectionState: .reconnecting(attempt: 2), metric: .gpuUtilization,
+            sourceMode: .auto, selectedID: "one"
+        )
+        #expect(reconnecting.severity == .connecting)
+        #expect(reconnecting.iconName == "bolt.badge.clock")
+    }
+
+    /// Silently falling back to `snapshots.first` reported a different machine's
+    /// metrics under the user's explicit Spark selection.
+    @Test func selectedModeDoesNotSubstituteAnotherSpark() {
+        let other = makeSnapshot(id: "other", name: "Other", gpu: 99)
+        let presentation = MenuBarPresenter.make(
+            snapshots: [other], connectionState: .connected, metric: .gpuUtilization,
+            sourceMode: .selected, selectedID: "chosen"
+        )
+        #expect(presentation.title == "—")
+        #expect(presentation.title != "99%")
+        #expect(presentation.accessibilityLabel == "Selected Spark is not reporting")
+        #expect(presentation.sourceSparkID == "chosen")
+    }
+
+    @Test func selectedModeWithNoChoiceUsesTheFirstSpark() {
+        let first = makeSnapshot(id: "first", name: "First", gpu: 42)
+        let second = makeSnapshot(id: "second", name: "Second", gpu: 99)
+        let presentation = MenuBarPresenter.make(
+            snapshots: [first, second], connectionState: .connected, metric: .gpuUtilization,
+            sourceMode: .selected, selectedID: nil
+        )
+        #expect(presentation.title == "42%")
     }
 
     @Test func alertEngineUsesCooldown() {
