@@ -23,8 +23,28 @@ struct HistoryTests {
         #expect(history.samples(for: "one").first?.gpuUsage == 20)
     }
 
+    /// The REST fallback skips Sparks whose metrics request fails, so one
+    /// snapshot can legitimately omit a Spark. Erasing the series on the first
+    /// miss destroyed the chart for a Spark that was still being monitored.
+    @Test func keepsSamplesWhileASparkIsBrieflyMissing() {
+        var history = HistoryStore(maxSamples: 10, maxConsecutiveMisses: 3)
+        let one = makeSnapshot(id: "one", name: "One", gpu: 10)
+        let two = makeSnapshot(id: "two", name: "Two", gpu: 20)
+        let start = Date(timeIntervalSince1970: 1)
+        history.sample([one, two], at: start)
+
+        history.sample([two], at: start.addingTimeInterval(2))
+        history.sample([two], at: start.addingTimeInterval(3))
+        #expect(history.samples(for: "one").count == 1)
+        #expect(history.samples(for: "two").count == 3)
+
+        // Only after the tolerance is exhausted is the series discarded.
+        history.sample([two], at: start.addingTimeInterval(4))
+        #expect(history.samples(for: "one").isEmpty)
+    }
+
     @Test func prunesSamplesForSparksThatLeaveTheFleet() {
-        var history = HistoryStore(maxSamples: 10)
+        var history = HistoryStore(maxSamples: 10, maxConsecutiveMisses: 1)
         let one = makeSnapshot(id: "one", name: "One", gpu: 10)
         let two = makeSnapshot(id: "two", name: "Two", gpu: 20)
         history.sample([one, two], at: Date(timeIntervalSince1970: 1))
@@ -33,6 +53,20 @@ struct HistoryTests {
         history.sample([two], at: Date(timeIntervalSince1970: 2))
         #expect(history.samples(for: "one").isEmpty)
         #expect(history.samples(for: "two").count == 2)
+    }
+
+    @Test func returnsSparkThatReappearsAfterABriefMiss() {
+        var history = HistoryStore(maxSamples: 10, maxConsecutiveMisses: 3)
+        let one = makeSnapshot(id: "one", name: "One", gpu: 10)
+        let start = Date(timeIntervalSince1970: 1)
+        history.sample([one], at: start)
+        history.sample([], at: start.addingTimeInterval(2))
+        history.sample([one], at: start.addingTimeInterval(3))
+        #expect(history.samples(for: "one").count == 2)
+        // A reappearance resets the miss counter rather than continuing it.
+        history.sample([], at: start.addingTimeInterval(4))
+        history.sample([], at: start.addingTimeInterval(5))
+        #expect(history.samples(for: "one").count == 2)
     }
 
     @Test func samplesHostVRAMPercentageInsteadOfUnifiedMemory() {
