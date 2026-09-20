@@ -62,6 +62,66 @@ struct SelectionAndAlertsTests {
         #expect(engine.evaluate(snapshots: [hot], at: start.addingTimeInterval(3)).count == 1)
     }
 
+    /// The REST fallback skips Sparks whose metrics request fails, so a Spark
+    /// can be absent from one snapshot while still alerting. Treating absence
+    /// as recovery cleared the latch and the cooldown, and the next snapshot
+    /// re-notified immediately.
+    @Test func alertEngineDoesNotRearmCooldownWhenASparkIsBrieflyMissing() {
+        var engine = AlertEngine(thresholds: AlertThresholds(temperatureCelsius: 85), cooldown: 900)
+        let hot = makeSnapshot(id: "hot", name: "Hot", temperature: 90)
+        let start = Date(timeIntervalSince1970: 1_000_000)
+
+        #expect(engine.evaluate(snapshots: [hot], at: start).count == 1)
+        // Spark missing for one round: nothing fires and nothing is forgotten.
+        #expect(engine.evaluate(snapshots: [], at: start.addingTimeInterval(2)).isEmpty)
+        // Still inside the 900s cooldown, so it must stay silent.
+        #expect(engine.evaluate(snapshots: [hot], at: start.addingTimeInterval(4)).isEmpty)
+        // Past the cooldown it fires again, which is correct.
+        #expect(engine.evaluate(snapshots: [hot], at: start.addingTimeInterval(901)).count == 1)
+    }
+
+    @Test func alertEngineForgetsLatchesAfterProlongedAbsence() {
+        var engine = AlertEngine(thresholds: AlertThresholds(temperatureCelsius: 85), cooldown: 900, maxMissedRounds: 2)
+        let hot = makeSnapshot(id: "hot", name: "Hot", temperature: 90)
+        let start = Date(timeIntervalSince1970: 1_000_000)
+        #expect(engine.evaluate(snapshots: [hot], at: start).count == 1)
+        #expect(engine.evaluate(snapshots: [], at: start.addingTimeInterval(2)).isEmpty)
+        #expect(engine.evaluate(snapshots: [], at: start.addingTimeInterval(4)).isEmpty)
+        // The latch and cooldown are gone, so the alert is treated as new.
+        #expect(engine.evaluate(snapshots: [hot], at: start.addingTimeInterval(6)).count == 1)
+    }
+
+    /// Hysteresis re-added a temperature reason for a Spark the engine had just
+    /// reported offline, so an offline machine kept re-notifying a stale reading.
+    @Test func alertEngineDoesNotReraiseTemperatureForAnOfflineSpark() {
+        var engine = AlertEngine(thresholds: AlertThresholds(temperatureCelsius: 85), cooldown: 900)
+        let hot = makeSnapshot(id: "hot", name: "Hot", temperature: 95)
+        let offlineWithStaleReading = makeSnapshot(id: "hot", name: "Hot", online: false, temperature: 82)
+        let start = Date(timeIntervalSince1970: 1_000_000)
+
+        #expect(engine.evaluate(snapshots: [hot], at: start).map(\.reason) == [.highTemperature])
+        #expect(engine.evaluate(snapshots: [offlineWithStaleReading], at: start.addingTimeInterval(2)).map(\.reason) == [.offline])
+        // The offline alert repeats once the cooldown elapses, but the stale 82C
+        // reading must never resurface as a temperature alert alongside it.
+        for offset in [910.0, 1_820.0] {
+            let events = engine.evaluate(snapshots: [offlineWithStaleReading], at: start.addingTimeInterval(offset))
+            #expect(events.map(\.reason) == [.offline])
+            #expect(events.contains { $0.reason == .highTemperature } == false)
+        }
+    }
+
+    @Test func alertEngineKeepsIndependentCooldownsPerSpark() {
+        var engine = AlertEngine(thresholds: AlertThresholds(temperatureCelsius: 85), cooldown: 60)
+        let first = makeSnapshot(id: "first", name: "First", temperature: 90)
+        let second = makeSnapshot(id: "second", name: "Second", temperature: 90)
+        let start = Date(timeIntervalSince1970: 100)
+        #expect(engine.evaluate(snapshots: [first], at: start).map(\.sparkID) == ["first"])
+        // A different Spark alerting later still notifies.
+        #expect(engine.evaluate(snapshots: [first, second], at: start.addingTimeInterval(1)).map(\.sparkID) == ["second"])
+        #expect(engine.evaluate(snapshots: [first, second], at: start.addingTimeInterval(30)).isEmpty)
+        #expect(engine.evaluate(snapshots: [first, second], at: start.addingTimeInterval(62)).map(\.sparkID) == ["first", "second"])
+    }
+
     @Test func reconnectScheduleHasExpectedCap() {
         let policy = ReconnectBackoff()
         #expect(policy.delay(attempt: 0, jitter: 0) == 1)
