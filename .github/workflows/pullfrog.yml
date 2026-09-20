@@ -18,8 +18,10 @@ permissions:
 jobs:
   pullfrog:
     runs-on: ubuntu-latest
+    # OIDC tokens are only needed for cloud-provider federation. The providers
+    # below are configured with static API keys, so this capability is not
+    # granted. Restore it only if you switch to a keyless provider.
     permissions:
-      id-token: write
       contents: read
     steps:
       - name: Check out source
@@ -28,7 +30,10 @@ jobs:
           fetch-depth: 1
 
       - name: Run agent
-        uses: pullfrog/pullfrog@v0
+        # Pinned to a commit, not the mutable `v0` tag. This action receives
+        # every provider API key below, so a retag upstream would otherwise run
+        # attacker code with them. Dependabot keeps the pin current.
+        uses: pullfrog/pullfrog@ce127b38d7f0c6c5e2c40ccd290adc4c5652357f # v0 (0.1.82)
         with:
           prompt: ${{ inputs.prompt }}
         env:
