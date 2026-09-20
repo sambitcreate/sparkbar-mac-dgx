@@ -175,7 +175,6 @@ public extension SparkSnapshot {
 public struct MenuBarPresentation: Equatable, Sendable {
     public let title: String
     public let accessibilityLabel: String
-    public let iconName: String
     public let isDimmed: Bool
     public let isPulsing: Bool
     public let severity: MenuBarSeverity
@@ -184,7 +183,6 @@ public struct MenuBarPresentation: Equatable, Sendable {
     public init(
         title: String,
         accessibilityLabel: String,
-        iconName: String,
         isDimmed: Bool,
         isPulsing: Bool,
         severity: MenuBarSeverity,
@@ -192,12 +190,15 @@ public struct MenuBarPresentation: Equatable, Sendable {
     ) {
         self.title = title
         self.accessibilityLabel = accessibilityLabel
-        self.iconName = iconName
         self.isDimmed = isDimmed
         self.isPulsing = isPulsing
         self.severity = severity
         self.sourceSparkID = sourceSparkID
     }
+
+    /// The glyph is derived from `severity` so a state can never be described
+    /// by two different symbols in two places.
+    public var iconName: String { severity.iconName }
 }
 
 public enum MenuBarSeverity: Equatable, Sendable {
@@ -205,6 +206,20 @@ public enum MenuBarSeverity: Equatable, Sendable {
     case warning
     case offline
     case disconnected
+    case connecting
+
+    /// `offline` and `disconnected` deliberately use different glyphs. An
+    /// unreachable sparkDash is not the same thing as an offline Spark, and the
+    /// two used to render identically as a dimmed "—" beside a slashed bolt.
+    public var iconName: String {
+        switch self {
+        case .normal: return "bolt.fill"
+        case .warning: return "bolt.triangle.fill"
+        case .offline: return "bolt.slash"
+        case .disconnected: return "bolt.horizontal.circle"
+        case .connecting: return "bolt.badge.clock"
+        }
+    }
 }
 
 public enum SparkSelector {
@@ -268,14 +283,12 @@ public enum MenuBarPresenter {
                 default: return false
                 }
             }()
-            let icon = isConnecting ? "bolt.badge.clock" : "bolt.slash"
             return MenuBarPresentation(
                 title: "—",
                 accessibilityLabel: "sparkDash \(connectionState.shortLabel.lowercased())",
-                iconName: icon,
                 isDimmed: true,
                 isPulsing: connectionState == .connecting,
-                severity: .disconnected,
+                severity: isConnecting ? .connecting : .disconnected,
                 sourceSparkID: nil
             )
         }
@@ -286,7 +299,24 @@ public enum MenuBarPresenter {
         case .auto:
             selected = SparkSelector.auto(snapshots: snapshots, selectedID: selectedID, thresholds: thresholds)
         case .selected:
-            selected = snapshots.first(where: { $0.id == selectedID }) ?? snapshots.first
+            if let selectedID {
+                selected = snapshots.first(where: { $0.id == selectedID })
+                guard selected != nil else {
+                    // The user explicitly chose this Spark. Substituting another
+                    // machine would report a different box's metrics under the
+                    // configured selection, so show that it is not reporting.
+                    return MenuBarPresentation(
+                        title: "—",
+                        accessibilityLabel: "Selected Spark is not reporting",
+                        isDimmed: true,
+                        isPulsing: false,
+                        severity: .offline,
+                        sourceSparkID: selectedID
+                    )
+                }
+            } else {
+                selected = snapshots.first
+            }
         case .aggregate:
             selected = nil
         }
@@ -297,7 +327,6 @@ public enum MenuBarPresenter {
                 return MenuBarPresentation(
                     title: "—",
                     accessibilityLabel: "No Sparks online",
-                    iconName: "bolt.slash",
                     isDimmed: true,
                     isPulsing: false,
                     severity: .offline,
@@ -309,7 +338,6 @@ public enum MenuBarPresenter {
             return MenuBarPresentation(
                 title: title,
                 accessibilityLabel: "Aggregate Spark status, \(title)",
-                iconName: warning ? "bolt.triangle.fill" : "bolt.fill",
                 isDimmed: false,
                 isPulsing: online.contains { $0.llmActivity > 0 },
                 severity: warning ? .warning : .normal,
@@ -321,7 +349,6 @@ public enum MenuBarPresenter {
             return MenuBarPresentation(
                 title: "—",
                 accessibilityLabel: "No Spark selected",
-                iconName: "bolt.slash",
                 isDimmed: true,
                 isPulsing: false,
                 severity: .offline,
@@ -333,7 +360,6 @@ public enum MenuBarPresenter {
             return MenuBarPresentation(
                 title: "—",
                 accessibilityLabel: "\(spark.name) offline",
-                iconName: "bolt.slash",
                 isDimmed: true,
                 isPulsing: false,
                 severity: .offline,
@@ -346,7 +372,6 @@ public enum MenuBarPresenter {
         return MenuBarPresentation(
             title: title,
             accessibilityLabel: "\(spark.name), \(title)",
-            iconName: warning ? "bolt.triangle.fill" : "bolt.fill",
             isDimmed: false,
             isPulsing: spark.llmActivity > 0,
             severity: warning ? .warning : .normal,
