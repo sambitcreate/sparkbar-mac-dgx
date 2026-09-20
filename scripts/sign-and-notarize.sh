@@ -27,8 +27,7 @@ codesign \
   --sign "$signing_identity" \
   "$app_path"
 
-codesign --verify --deep --strict --verbose=2 "$app_path"
-codesign_details=$(codesign -dvvv "$app_path" 2>&1)
+codesign --verify --deep --strict --verbose=2 "$app_path"codesign_details=$(codesign -dvvv "$app_path" 2>&1)
 printf '%s\n' "$codesign_details" | grep -q 'Authority=Developer ID Application:'
 printf '%s\n' "$codesign_details" | grep -q 'Timestamp='
 
@@ -40,12 +39,30 @@ if [ -n "${APPLE_API_PRIVATE_KEY_PATH:-}" ]; then
   : "${APPLE_API_ISSUER_ID:?APPLE_API_ISSUER_ID is required with APPLE_API_PRIVATE_KEY_PATH}"
 
   echo "Submitting archive with xcrun notarytool"
-  xcrun notarytool submit "$notarization_archive_path" \
+  submission=$(xcrun notarytool submit "$notarization_archive_path" \
     --key "$APPLE_API_PRIVATE_KEY_PATH" \
     --key-id "$APPLE_API_KEY_ID" \
     --issuer "$APPLE_API_ISSUER_ID" \
     --wait \
-    --output-format json
+    --output-format json)
+  printf '%s\n' "$submission"
+
+  # Assert the verdict rather than only printing it. `stapler staple` below
+  # would fail anyway, but a rejection should say why, and should fetch the
+  # per-issue log while the submission id is still in hand.
+  notarization_status=$(printf '%s\n' "$submission" | /usr/bin/plutil -extract status raw - 2>/dev/null || true)
+  if [ "$notarization_status" != "Accepted" ]; then
+    echo "notarization was not accepted (status: ${notarization_status:-unknown})" >&2
+    submission_id=$(printf '%s\n' "$submission" | /usr/bin/plutil -extract id raw - 2>/dev/null || true)
+    if [ -n "$submission_id" ]; then
+      echo "notarization log for $submission_id:" >&2
+      xcrun notarytool log "$submission_id" \
+        --key "$APPLE_API_PRIVATE_KEY_PATH" \
+        --key-id "$APPLE_API_KEY_ID" \
+        --issuer "$APPLE_API_ISSUER_ID" >&2 || true
+    fi
+    exit 65
+  fi
 elif command -v asc >/dev/null 2>&1; then
   echo "Submitting archive with asc"
   asc notarization submit --file "$notarization_archive_path" --wait
