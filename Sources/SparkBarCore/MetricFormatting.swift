@@ -1,6 +1,14 @@
 import Foundation
 
 public enum MetricFormatter {
+    /// Anything outside this range is not a physical reading for a monitored GPU,
+    /// and a value beyond `Int.max` cannot be rounded and converted safely.
+    private static let plausibleCelsius: ClosedRange<Double> = -273.15...10_000
+
+    /// Uptime is rendered as whole seconds. A bound keeps `Int(seconds)` from
+    /// trapping on an absurd server-supplied value (1e15s is ~31 million years).
+    private static let maximumPlausibleUptimeSeconds: Double = 1e15
+
     public static func percent(_ value: Double?, maximum: Double = 100) -> String {
         guard let value, value.isFinite else { return "—" }
         return "\(Int(value.rounded().clamped(to: 0...maximum)))%"
@@ -12,16 +20,24 @@ public enum MetricFormatter {
     }
 
     public static func temperatureShort(_ celsius: Double?, unit: TemperatureUnit = .celsius) -> String {
-        guard let celsius, celsius.isFinite else { return "—" }
-        let value = convertedTemperature(celsius, unit: unit)
+        guard let value = plausibleTemperature(celsius, unit: unit) else { return "—" }
         return "\(Int(value.rounded()))°"
     }
 
     public static func temperature(_ celsius: Double?, unit: TemperatureUnit = .celsius) -> String {
-        guard let celsius, celsius.isFinite else { return "—" }
+        guard let value = plausibleTemperature(celsius, unit: unit) else { return "—" }
         let suffix = unit == .fahrenheit ? "°F" : "°C"
-        let value = convertedTemperature(celsius, unit: unit)
         return "\(value.formatted(.number.precision(.fractionLength(0...1))))\(suffix)"
+    }
+
+    /// Validates on the Celsius input, then on the converted value, because
+    /// Fahrenheit conversion can turn a large finite Celsius reading into
+    /// infinity. Returns nil for anything unsafe to convert to `Int`.
+    public static func plausibleTemperature(_ celsius: Double?, unit: TemperatureUnit) -> Double? {
+        guard let celsius, celsius.isFinite, plausibleCelsius.contains(celsius) else { return nil }
+        let converted = convertedTemperature(celsius, unit: unit)
+        guard converted.isFinite else { return nil }
+        return converted
     }
 
     public static func watts(_ value: Double?, includeUnit: Bool = true) -> String {
@@ -67,7 +83,8 @@ public enum MetricFormatter {
     }
 
     public static func uptime(_ seconds: Double?) -> String {
-        guard let seconds, seconds >= 0, seconds.isFinite else { return "—" }
+        guard let seconds, seconds >= 0, seconds.isFinite,
+              seconds < maximumPlausibleUptimeSeconds else { return "—" }
         let total = Int(seconds)
         let days = total / 86_400
         let hours = (total % 86_400) / 3_600
@@ -91,7 +108,11 @@ public enum MetricFormatter {
 
     public static func normalisedProgress(_ value: Double?) -> Double? {
         guard let value, value.isFinite else { return nil }
-        return (value <= 1 ? value * 100 : value).clamped(to: 0...100)
+        // sparkDash documents `percent` on a 0-100 scale, so exactly 1 means one
+        // percent rather than a complete job; only sub-unit values are treated
+        // as a 0-1 fraction.
+        let scaled = value > 0 && value < 1 ? value * 100 : value
+        return scaled.clamped(to: 0...100)
     }
 
     public static func convertedTemperature(_ celsius: Double, unit: TemperatureUnit) -> Double {
