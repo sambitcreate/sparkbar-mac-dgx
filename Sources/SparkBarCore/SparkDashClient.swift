@@ -283,6 +283,14 @@ public actor SparkDashClient {
             do {
                 let envelope = try decoder.decode(SnapshotEnvelope.self, from: data)
                 guard envelope.type == nil || envelope.type == "snapshot" else { continue }
+                // Never let a frame that lost Sparks pass as a healthy one: the
+                // fleet would look smaller than it is, and downstream state
+                // (history, alerts, selection) would treat that as real.
+                if envelope.hasUnreadableSparks {
+                    emit(.diagnostic(envelope.sparksFieldIsUnreadable
+                        ? "sparkDash sent a snapshot whose Spark list was unreadable."
+                        : "Ignored \(envelope.droppedSparkCount) unreadable Spark entr\(envelope.droppedSparkCount == 1 ? "y" : "ies") in a snapshot."))
+                }
                 emit(.snapshot(envelope))
             } catch {
                 // A malformed frame should not kill a healthy stream. A valid
