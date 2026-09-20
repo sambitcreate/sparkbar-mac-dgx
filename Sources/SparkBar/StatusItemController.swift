@@ -1,5 +1,6 @@
 import AppKit
 import Observation
+import SparkBarCore
 import SwiftUI
 
 @MainActor
@@ -14,10 +15,12 @@ final class StatusItemController: NSObject {
     private var pulseVisible = true
 
     // Template images are cached: the status item updates on every snapshot
-    // and must not allocate a fresh NSImage each time.
+    // and must not allocate a fresh NSImage each time. The glyph is selected by
+    // severity, so an unreachable sparkDash cannot render as an offline Spark.
     private static let boltImage = templateImage("bolt.fill")
     private static let warningImage = templateImage("bolt.triangle.fill")
     private static let offlineImage = templateImage("bolt.slash")
+    private static let disconnectedImage = templateImage("bolt.horizontal.circle")
     private static let connectingImage = templateImage("bolt.badge.clock")
 
     private static func templateImage(_ symbolName: String) -> NSImage {
@@ -27,12 +30,13 @@ final class StatusItemController: NSObject {
         return image
     }
 
-    private static func image(for iconName: String) -> NSImage {
-        switch iconName {
-        case "bolt.triangle.fill": return warningImage
-        case "bolt.slash": return offlineImage
-        case "bolt.badge.clock": return connectingImage
-        default: return boltImage
+    private static func image(for severity: MenuBarSeverity) -> NSImage {
+        switch severity {
+        case .normal: return boltImage
+        case .warning: return warningImage
+        case .offline: return offlineImage
+        case .disconnected: return disconnectedImage
+        case .connecting: return connectingImage
         }
     }
 
@@ -164,7 +168,7 @@ final class StatusItemController: NSObject {
         guard let button = statusItem.button else { return }
         let presentation = model.currentPresentation
         button.title = presentation.title
-        button.image = Self.image(for: presentation.iconName)
+        button.image = Self.image(for: presentation.severity)
         button.alphaValue = presentation.isDimmed ? 0.45 : (pulseVisible ? 1 : 0.7)
         button.toolTip = presentation.accessibilityLabel
         button.setAccessibilityLabel(presentation.accessibilityLabel)
