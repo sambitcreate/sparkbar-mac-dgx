@@ -26,7 +26,15 @@
 	<true/>
 	<key>NSAppTransportSecurity</key>
 	<dict>
-		<!-- sparkDash is commonly hosted over HTTP on a trusted LAN or Tailscale network. -->
+		<!-- SparkBar talks to a user-supplied sparkDash URL, which is normally a
+		     LAN address or a Tailscale host. NSAllowsLocalNetworking does not
+		     cover this: it exempts unqualified names, *.local, and RFC 1918 /
+		     RFC 4193 addresses, but not the Tailscale CGNAT range (100.64/10)
+		     or a *.ts.net hostname, which are this app's headline deployment.
+		     Switching therefore needs verification against a real tailnet.
+		     The endpoint is chosen by the user, the client is GET-only, and the
+		     UI warns when a non-private host is configured over plain HTTP
+		     (SparkDashEndpoint.shouldWarnAboutInsecureRemote). -->
 		<key>NSAllowsArbitraryLoads</key>
 		<true/>
 	</dict>
