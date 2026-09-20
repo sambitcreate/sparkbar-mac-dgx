@@ -125,7 +125,7 @@ public actor SparkDashClient {
         // Fetch settings in parallel with the spark list; both are cheap GETs
         // and the connection test waits for neither to finish the other.
         async let settingsTask = Self.fetchSettings(endpoint: endpoint, session: session)
-        let request = URLRequest(url: endpoint.apiURL(path: "/api/sparks"))
+        let request = URLRequest(url: try endpoint.apiURL(path: "/api/sparks"))
         let (data, response) = try await session.data(for: request)
         guard let httpResponse = response as? HTTPURLResponse else {
             throw SparkDashClientError.invalidResponse
@@ -184,7 +184,10 @@ public actor SparkDashClient {
     }
 
     private func fetchMetricsSnapshot(sparkID: String) async -> SparkSnapshot? {
-        let request = URLRequest(url: endpoint.apiURL(path: "/api/sparks/\(sparkID)/metrics"))
+        // A server-supplied identifier that cannot be encoded as one path
+        // component is rejected here instead of being interpolated raw.
+        guard let url = try? endpoint.metricsURL(sparkID: sparkID) else { return nil }
+        let request = URLRequest(url: url)
         do {
             let (data, response) = try await session.data(for: request)
             guard let httpResponse = response as? HTTPURLResponse,
