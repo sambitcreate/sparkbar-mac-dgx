@@ -2,7 +2,6 @@ import AppKit
 import Charts
 import SparkBarCore
 import SwiftUI
-
 struct SparkDetailView: View {
     let snapshot: SparkSnapshot
     let isServerLive: Bool
@@ -242,13 +241,25 @@ private struct SystemSummary: View {
     }
 
     private var networkValue: String {
-        guard let interface = snapshot.metrics?.network?.interfaces?.first(where: { $0.disabled != true }) else { return "—" }
+        guard let interface = primaryInterface else { return "—" }
         return "↓ \(MetricFormatter.bytesPerSecond(interface.rxSpeed))"
     }
 
     private var networkDetail: String {
-        guard let interface = snapshot.metrics?.network?.interfaces?.first(where: { $0.disabled != true }) else { return "Unavailable" }
+        guard let interface = primaryInterface else { return "Unavailable" }
         return "↑ \(MetricFormatter.bytesPerSecond(interface.txSpeed))"
+    }
+
+    /// Prefers the interface sparkDash names as primary. Falling back to the
+    /// first non-disabled entry silently reported, for example, `docker0` or
+    /// `tailscale0` rates as the machine's network throughput.
+    private var primaryInterface: NetworkInterfaceMetrics? {
+        let enabled = (snapshot.metrics?.network?.interfaces ?? []).filter { $0.disabled != true }
+        if let primary = snapshot.metrics?.network?.primaryInterface,
+           let match = enabled.first(where: { $0.name == primary || $0.label == primary }) {
+            return match
+        }
+        return enabled.first
     }
 }
 
@@ -380,7 +391,7 @@ private struct ComfyCard: View {
                     if let device = metrics.deviceType {
                         Text(device)
                     }
-                    if let openUrl = metrics.openUrl, let url = URL(string: openUrl) {
+                    if let url = SafeURL.openable(metrics.openUrl) {
                         Button("Open ComfyUI") { NSWorkspace.shared.open(url) }
                             .buttonStyle(.link)
                     }
