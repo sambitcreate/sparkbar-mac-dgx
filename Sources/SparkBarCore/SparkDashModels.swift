@@ -51,18 +51,39 @@ public struct SnapshotEnvelope: Decodable, Equatable, Sendable {
     public let type: String?
     public let sparks: [SparkSnapshot]
     public let refreshInterval: Int?
+    /// How many entries in the `sparks` array could not be decoded and were
+    /// skipped. A frame that silently loses Sparks must be reportable.
+    public let droppedSparkCount: Int
+    /// True when the `sparks` key was present but was not an array at all.
+    public let sparksFieldIsUnreadable: Bool
 
-    public init(type: String? = "snapshot", sparks: [SparkSnapshot], refreshInterval: Int? = nil) {
+    public init(
+        type: String? = "snapshot",
+        sparks: [SparkSnapshot],
+        refreshInterval: Int? = nil,
+        droppedSparkCount: Int = 0,
+        sparksFieldIsUnreadable: Bool = false
+    ) {
         self.type = type
         self.sparks = sparks
         self.refreshInterval = refreshInterval
+        self.droppedSparkCount = droppedSparkCount
+        self.sparksFieldIsUnreadable = sparksFieldIsUnreadable
     }
 
     public init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         type = try container.decodeIfPresent(String.self, forKey: .type)
-        sparks = try container.decodeLossy(SparkSnapshot.self, forKey: .sparks)
+        let decoded = try container.decodeLossyReporting(SparkSnapshot.self, forKey: .sparks)
+        sparks = decoded.values
+        droppedSparkCount = decoded.dropped
+        sparksFieldIsUnreadable = decoded.fieldUnreadable
         refreshInterval = try container.decodeIfPresent(Int.self, forKey: .refreshInterval)
+    }
+
+    /// True when the frame claimed to carry Sparks but none could be read.
+    public var hasUnreadableSparks: Bool {
+        sparksFieldIsUnreadable || droppedSparkCount > 0
     }
 
     private enum CodingKeys: String, CodingKey {
@@ -761,15 +782,33 @@ private extension KeyedDecodingContainer {
     }
 
     func decodeLossy<T: Decodable>(_ type: T.Type, forKey key: Key) throws -> [T] {
-        guard var values = try? nestedUnkeyedContainer(forKey: key) else { return [] }
+        try decodeLossyReporting(type, forKey: key).values
+    }
+
+    /// Decodes an array while tolerating individual bad elements, and reports
+    /// how many were skipped so the caller can surface the loss instead of
+    /// silently presenting an emptier fleet than the server sent.
+    func decodeLossyReporting<T: Decodable>(
+        _ type: T.Type,
+        forKey key: Key
+    ) throws -> (values: [T], dropped: Int, fieldUnreadable: Bool) {
+        guard var values = try? nestedUnkeyedContainer(forKey: key) else {
+            // Distinguish an absent key from one that is present but malformed.
+            return ([], 0, (try? contains(key)) ?? false)
+        }
         var result: [T] = []
+        var dropped = 0
         while !values.isAtEnd {
+            // `FailableDecodable` never throws, so this always advances and
+            // the loop cannot spin on a bad element.
             let element = try values.decode(FailableDecodable<T>.self)
             if let value = element.value {
                 result.append(value)
+            } else {
+                dropped += 1
             }
         }
-        return result
+        return (result, dropped, false)
     }
 }
 
