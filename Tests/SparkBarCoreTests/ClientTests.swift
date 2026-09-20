@@ -69,6 +69,38 @@ struct ClientTests {
         #expect(envelope.sparks.first?.isOnline == true)
     }
 
+    /// `stop()` used to finish the AsyncStream, so restarting the same client
+    /// emitted nothing at all and the app sat in a silent disconnected state.
+    @Test func stopLeavesTheClientRestartable() async throws {
+        MockURLProtocol.handler = { _ in (Self.response(status: 503), Data()) }
+        let client = SparkDashClient(endpoint: try SparkDashEndpoint("http://example.test:5555"), session: Self.session())
+        let events = await client.events()
+        var iterator = events.makeAsyncIterator()
+
+        await client.stop()
+        #expect(await iterator.next() == .state(.disconnected))
+
+        await client.start()
+        #expect(await iterator.next() == .state(.connecting))
+
+        await client.shutdown()
+    }
+
+    /// `shutdown()` is the terminal teardown and ends the stream, which is what
+    /// lets the consumer's `for await` loop finish.
+    @Test func shutdownEndsTheEventStream() async throws {
+        MockURLProtocol.handler = { _ in (Self.response(status: 503), Data()) }
+        let client = SparkDashClient(endpoint: try SparkDashEndpoint("http://example.test:5555"), session: Self.session())
+        let events = await client.events()
+        var iterator = events.makeAsyncIterator()
+        await client.shutdown()
+        // The consumer still observes the final state, then the stream ends.
+        #expect(await iterator.next() == .state(.disconnected))
+        #expect(await iterator.next() == nil)
+        // A shutdown client cannot be restarted into a silently dead state.
+        await client.start()
+    }
+
     static func response(status: Int) -> HTTPURLResponse {
         HTTPURLResponse(
             url: URL(string: "http://example.test")!,
