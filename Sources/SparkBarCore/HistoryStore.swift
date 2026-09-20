@@ -31,20 +31,34 @@ public struct MetricHistoryPoint: Equatable, Identifiable, Sendable {
 
 public struct HistoryStore: Equatable, Sendable {
     public let maxSamples: Int
+    /// How many consecutive snapshots may omit a Spark before its series is
+    /// discarded. A single dropped poll must not erase a chart: the REST
+    /// fallback skips Sparks whose metrics request fails, so absence in one
+    /// snapshot is not evidence that the Spark left the fleet.
+    public let maxConsecutiveMisses: Int
     private(set) public var samplesBySparkID: [String: [MetricHistoryPoint]] = [:]
+    private var missesBySparkID: [String: Int] = [:]
 
-    public init(maxSamples: Int = 900) {
+    public init(maxSamples: Int = 900, maxConsecutiveMisses: Int = 15) {
         self.maxSamples = max(1, maxSamples)
+        self.maxConsecutiveMisses = max(1, maxConsecutiveMisses)
     }
 
     public mutating func sample(_ snapshots: [SparkSnapshot], at date: Date = .now) {
-        // Drop series for sparks that left the fleet so a long-lived process
-        // does not accumulate stale per-spark buffers.
+        // Drop series for Sparks that have been absent for several consecutive
+        // snapshots so a long-lived process does not accumulate stale buffers.
         let seenIDs = Set(snapshots.map(\.id))
-        for staleID in samplesBySparkID.keys.filter({ !seenIDs.contains($0) }) {
-            samplesBySparkID.removeValue(forKey: staleID)
+        for staleID in Array(samplesBySparkID.keys) where !seenIDs.contains(staleID) {
+            let misses = (missesBySparkID[staleID] ?? 0) + 1
+            if misses >= maxConsecutiveMisses {
+                samplesBySparkID.removeValue(forKey: staleID)
+                missesBySparkID.removeValue(forKey: staleID)
+            } else {
+                missesBySparkID[staleID] = misses
+            }
         }
         for snapshot in snapshots {
+            missesBySparkID.removeValue(forKey: snapshot.id)
             let point = MetricHistoryPoint(
                 date: date,
                 gpuUsage: snapshot.metrics?.gpu?.usage,
