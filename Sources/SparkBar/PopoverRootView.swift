@@ -225,6 +225,14 @@ private struct ConnectionView: View {
                         .font(.callout)
                         .foregroundStyle(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
+                    // Transport chatter was recorded but never shown, so a
+                    // stream repeatedly dropping frames looked like silence.
+                    if let diagnostic = model.lastDiagnostic, model.lastError == nil {
+                        Text(diagnostic)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
                 }
 
                 TextField("http://localhost:5555", text: Binding(
