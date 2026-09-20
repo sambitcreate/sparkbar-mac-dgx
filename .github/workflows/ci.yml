@@ -28,11 +28,15 @@ jobs:
 
       - name: Detect documentation-only changes
         id: detect
+        env:
+          # Passed through the environment rather than interpolated into the
+          # script, so a crafted value can never be executed as shell.
+          BASE_SHA: ${{ github.event.before }}
         run: |
           if [ "$GITHUB_EVENT_NAME" = "pull_request" ]; then
             base="origin/$GITHUB_BASE_REF"
           else
-            base="${{ github.event.before }}"
+            base="$BASE_SHA"
           fi
           case "$base" in
             "" | 0000000000000000000000000000000000000000)
@@ -40,6 +44,14 @@ jobs:
               exit 0
               ;;
           esac
+          # A force-push can leave the previous tip unreachable, and `git diff`
+          # then exits non-zero and fails the required check with no code
+          # problem to fix. Treat an unknown base as "not docs-only".
+          if ! git cat-file -e "${base}^{commit}" 2>/dev/null; then
+            echo "base '$base' is not present locally; assuming a code change" >&2
+            echo "docs_only=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
           changed=$(git diff --name-only "$base" HEAD)
           non_docs=$(printf '%s\n' "$changed" | grep -Ev '\.md$' || true)
           if [ -n "$non_docs" ]; then
@@ -84,5 +96,7 @@ jobs:
           app=".build/Release/SparkBar.app"
           plutil -lint "$app/Contents/Info.plist"
           test -x "$app/Contents/MacOS/SparkBar"
-          codesign --force --deep --sign - "$app"
+          # --deep is for verification, not signing: it would silently mis-sign
+          # any nested content once a helper or framework is added.
+          codesign --force --sign - "$app"
           codesign --verify --deep --strict "$app"
