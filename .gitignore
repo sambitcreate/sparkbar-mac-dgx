@@ -6,3 +6,15 @@ Build/
 SparkBar.app/
 dist/
 .papercuts/
+
+# Signing material must never be committed. The release workflow keeps the
+# certificate and API key in $RUNNER_TEMP only, but these patterns stop an
+# accidental `git add -A` from publishing them if one is ever placed here.
+*.p12
+*.pfx
+*.p8
+*.mobileprovision
+*.cer
+*.key
+.env
+.env.*
