@@ -35,10 +35,22 @@ final class AppModel {
     private var currentEndpoint: SparkDashEndpoint?
     private var eventTask: Task<Void, Never>?
     private var pollTask: Task<Void, Never>?
+    private var historyTask: Task<Void, Never>?
     private var alertEngine: AlertEngine
+    /// Retains Sparks that a single snapshot omitted, so one failed metrics
+    /// request cannot remove a machine from the dashboard.
+    private var fleetMerger = FleetSnapshotMerger()
+    /// Identifies the current polling loop. A cancelled loop must not clear the
+    /// handle of a newer one that replaced it.
+    private var pollGeneration = 0
     let launchAtLoginService = LaunchAtLoginService()
     let notificationService = NotificationService()
     private var isStopping = false
+
+    /// sparkDash skips broadcasting an unchanged snapshot, so a Spark sitting
+    /// idle produces no frames. Sampling on an independent timer keeps the
+    /// history continuous instead of only recording changes.
+    private static let historySampleInterval: Duration = .seconds(2)
 
     init(defaults: UserDefaults = .standard) {
         settings = SettingsStore(defaults: defaults)
@@ -101,11 +113,11 @@ final class AppModel {
     func stop() {
         isStopping = true
         eventTask?.cancel()
-        pollTask?.cancel()
+        stopPollingFallback()
+        stopHistorySampling()
         eventTask = nil
-        pollTask = nil
         if let client {
-            Task { await client.stop() }
+            Task { await client.shutdown() }
         }
         client = nil
     }
@@ -128,10 +140,9 @@ final class AppModel {
     func connect(to endpoint: SparkDashEndpoint) {
         isStopping = false
         eventTask?.cancel()
-        pollTask?.cancel()
-        pollTask = nil
+        stopPollingFallback()
         if let oldClient = client {
-            Task { await oldClient.stop() }
+            Task { await oldClient.shutdown() }
         }
 
         let endpointChanged = currentEndpoint != endpoint
@@ -143,8 +154,13 @@ final class AppModel {
             configuredSparks = []
             serverSettings = nil
             lastSnapshotAt = nil
+            // A different sparkDash describes different machines, so the
+            // accumulated chart no longer applies to anything.
+            history = HistoryStore(maxSamples: 900)
+            fleetMerger.reset()
         }
         lastError = nil
+        startHistorySampling()
 
         let newClient = SparkDashClient(endpoint: endpoint)
         client = newClient
@@ -242,8 +258,9 @@ final class AppModel {
         eventTask?.cancel()
         eventTask = nil
         stopPollingFallback()
+        stopHistorySampling()
         if let client {
-            Task { await client.stop() }
+            Task { await client.shutdown() }
         }
         client = nil
         connectionState = .disconnected
@@ -273,14 +290,40 @@ final class AppModel {
         history.sample(snapshots)
     }
 
+    private func startHistorySampling() {
+        guard historyTask == nil else { return }
+        historyTask = Task { [weak self] in
+            while !Task.isCancelled {
+                do {
+                    try await Task.sleep(for: Self.historySampleInterval)
+                } catch {
+                    return
+                }
+                guard let self else { return }
+                // Do not extend a chart with values that are not being
+                // refreshed any more.
+                guard self.isReceivingData else { continue }
+                self.sampleHistory()
+            }
+        }
+    }
+
+    private func stopHistorySampling() {
+        historyTask?.cancel()
+        historyTask = nil
+    }
+
     /// Shared path for WebSocket frames and REST polling results so alerts,
     /// selection, history, and freshness behave identically on both paths.
     func applySnapshot(_ envelope: SnapshotEnvelope) {
-        if snapshots != envelope.sparks {
-            snapshots = envelope.sparks
+        // Merge rather than replace: a snapshot that omits a Spark (the REST
+        // fallback skips failed metrics requests, and a frame can drop entries
+        // that did not decode) must not delete it from the dashboard.
+        let merged = fleetMerger.merge(known: snapshots, incoming: envelope.sparks)
+        if snapshots != merged {
+            snapshots = merged
         }
         lastSnapshotAt = .now
-        sampleHistory()
         lastError = nil
         // Only auto-pick when nothing is selected; never clobber the
         // user's explicit choice when a spark briefly leaves the list.
@@ -291,7 +334,11 @@ final class AppModel {
         alertEngine.cooldown = settings.alertCooldownMinutes * 60
         let events = alertEngine.evaluate(snapshots: snapshots, temperatureUnit: effectiveTemperatureUnit)
         if settings.showNotifications {
-            Task { await notificationService.deliver(events) }
+            Task { @MainActor in
+                if let failure = await notificationService.deliver(events) {
+                    lastError = failure
+                }
+            }
         }
     }
 
@@ -300,6 +347,8 @@ final class AppModel {
     /// as a real WebSocket connection delivers data.
     private func startPollingFallback() {
         guard pollTask == nil, let client else { return }
+        pollGeneration += 1
+        let generation = pollGeneration
         pollTask = Task { [weak self, client] in
             while !Task.isCancelled {
                 guard let self else { return }
@@ -308,16 +357,17 @@ final class AppModel {
                    let envelope = try? await client.pollSnapshot(sparkIDs: ids),
                    !envelope.sparks.isEmpty {
                     guard !Task.isCancelled, self.connectionState != .connected else {
-                        // Exiting here would otherwise leave `pollTask` non-nil
-                        // and block the next fallback start.
-                        self.pollTask = nil
+                        self.finishPollingFallback(generation: generation)
                         return
                     }
                     self.applySnapshot(envelope)
                 }
-                let intervalMs = UInt64(max(self.serverSettings?.pollIntervalMs ?? 2000, 1000))
+                // The interval is server-supplied, so it is clamped: an
+                // enormous value used to overflow the nanosecond conversion.
+                let interval = self.serverSettings?.boundedPollInterval
+                    ?? .milliseconds(SparkDashSettings.defaultPollIntervalMs)
                 do {
-                    try await Task.sleep(nanoseconds: intervalMs * 1_000_000)
+                    try await Task.sleep(for: interval)
                 } catch {
                     return
                 }
@@ -325,7 +375,16 @@ final class AppModel {
         }
     }
 
+    /// Clears the handle only if this loop still owns it. A cancelled loop can
+    /// resume after a newer one was installed, and clearing that newer handle
+    /// would leave it running with no way to cancel it.
+    private func finishPollingFallback(generation: Int) {
+        guard pollGeneration == generation else { return }
+        pollTask = nil
+    }
+
     private func stopPollingFallback() {
+        pollGeneration += 1
         pollTask?.cancel()
         pollTask = nil
     }
