@@ -42,8 +42,12 @@ final class NotificationService: NSObject, UNUserNotificationCenterDelegate {
         (try? await center.requestAuthorization(options: [.alert, .sound])) ?? false
     }
 
-    func deliver(_ events: [AlertEvent]) async {
-        guard !events.isEmpty else { return }
+    /// Delivers the events and returns a user-facing message when delivery
+    /// failed. A swallowed failure used to consume the alert's cooldown with
+    /// nothing shown to the user.
+    func deliver(_ events: [AlertEvent]) async -> String? {
+        guard !events.isEmpty else { return nil }
+        var failure: String?
         for event in events {
             let content = UNMutableNotificationContent()
             content.title = "\(event.title) · \(event.sparkName)"
@@ -55,8 +59,13 @@ final class NotificationService: NSObject, UNUserNotificationCenterDelegate {
                 content: content,
                 trigger: nil
             )
-            try? await center.add(request)
+            do {
+                try await center.add(request)
+            } catch {
+                failure = "Notifications could not be delivered: \(error.localizedDescription)"
+            }
         }
+        return failure
     }
 
     nonisolated func userNotificationCenter(
