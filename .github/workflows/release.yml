@@ -31,7 +31,7 @@ jobs:
       MACOS_SIGNING_IDENTITY: ${{ vars.MACOS_SIGNING_IDENTITY }}
     steps:
       - name: Check out source
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
         with:
           # This job holds `contents: write`. Without this the token is written
           # into .git/config, where the commit-controlled code that `swift test`
