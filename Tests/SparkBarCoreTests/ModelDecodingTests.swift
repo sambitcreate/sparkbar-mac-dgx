@@ -111,4 +111,22 @@ struct ModelDecodingTests {
         #expect(spark.memoryPercentage == 40)
         #expect(spark.memoryNoun == "unified memory")
     }
+
+    /// `pollIntervalMs` is server-supplied. Converting an enormous value to
+    /// nanoseconds used to overflow and trap, and a merely large one silently
+    /// stopped the fallback from ever refreshing again.
+    @Test func clampsServerSuppliedPollInterval() throws {
+        func interval(_ json: String) throws -> Duration {
+            try JSONDecoder().decode(SparkDashSettings.self, from: Data(json.utf8)).boundedPollInterval
+        }
+        #expect(try interval(#"{"pollIntervalMs":2000}"#) == .milliseconds(2_000))
+        #expect(try interval(#"{"pollIntervalMs":1000}"#) == .milliseconds(1_000))
+        #expect(try interval(#"{"pollIntervalMs":50}"#) == .milliseconds(1_000))
+        #expect(try interval(#"{"pollIntervalMs":0}"#) == .milliseconds(1_000))
+        #expect(try interval(#"{"pollIntervalMs":-1}"#) == .milliseconds(1_000))
+        #expect(try interval(#"{"pollIntervalMs":60000}"#) == .milliseconds(60_000))
+        #expect(try interval(#"{"pollIntervalMs":4000000000000}"#) == .milliseconds(60_000))
+        #expect(try interval(#"{"pollIntervalMs":9223372036854775807}"#) == .milliseconds(60_000))
+        #expect(try interval(#"{}"#) == .milliseconds(2_000))
+    }
 }
