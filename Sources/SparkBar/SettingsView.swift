@@ -31,6 +31,16 @@ struct SettingsView: View {
                             .font(.caption)
                             .foregroundStyle(.orange)
                     }
+                    if let error = model.lastError {
+                        Label(error, systemImage: "exclamationmark.triangle")
+                            .font(.caption)
+                            .foregroundStyle(.orange)
+                    }
+                    if let diagnostic = model.lastDiagnostic {
+                        Label(diagnostic, systemImage: "waveform.path.ecg")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
                 }
             }
             .formStyle(.grouped)
