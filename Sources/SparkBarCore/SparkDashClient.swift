@@ -22,11 +22,28 @@ public struct SparkDashSettings: Decodable, Equatable, Sendable {
     public let density: String?
 }
 
+public extension SparkDashSettings {
+    /// The polling interval to actually use.
+    ///
+    /// sparkDash supplies this value, so it is untrusted: it is clamped to a
+    /// sane window. Without the upper bound, converting a huge interval to
+    /// nanoseconds overflows and traps, and a merely large one silently stops
+    /// the fallback from ever refreshing again.
+    var boundedPollInterval: Duration {
+        .milliseconds(min(max(pollIntervalMs ?? Self.defaultPollIntervalMs, Self.minimumPollIntervalMs), Self.maximumPollIntervalMs))
+    }
+
+    static let defaultPollIntervalMs = 2_000
+    static let minimumPollIntervalMs = 1_000
+    static let maximumPollIntervalMs = 60_000
+}
+
 public enum SparkDashClientError: Error, Equatable, LocalizedError, Sendable {
     case invalidHTTPStatus(Int)
     case invalidResponse
     case invalidPayload
     case websocketUnavailable
+    case pongTimeout
 
     public var errorDescription: String? {
         switch self {
@@ -34,6 +51,7 @@ public enum SparkDashClientError: Error, Equatable, LocalizedError, Sendable {
         case .invalidResponse: return "sparkDash returned an invalid HTTP response."
         case .invalidPayload: return "sparkDash returned an unreadable payload."
         case .websocketUnavailable: return "sparkDash was reachable, but its live stream is unavailable."
+        case .pongTimeout: return "The live stream stopped answering; reconnecting."
         }
     }
 }
@@ -75,7 +93,17 @@ public actor SparkDashClient {
     private var webSocket: URLSessionWebSocketTask?
     private var running = false
     private var reconnectAttempt = 0
+    private var lastPongAt: Date?
     private let backoff: ReconnectBackoff
+
+    private static let pingInterval: Duration = .seconds(15)
+    private static let pongTimeout: Duration = .seconds(10)
+
+    /// Bounds the buffer between this actor and the MainActor consumer. A
+    /// server that writes frames faster than the UI drains them would otherwise
+    /// grow it without limit. Control events are rare and snapshots are
+    /// idempotent, so keeping the newest entries is the right trade.
+    private static let eventBufferLimit = 512
 
     /// SparkBar talks to LAN hosts that may be offline, so a snappy timeout
     /// matters more than the system default of 60s per request.
@@ -98,18 +126,23 @@ public actor SparkDashClient {
         self.decoder = decoder
         self.backoff = backoff
         var continuation: AsyncStream<SparkDashClientEvent>.Continuation?
-        self.eventsStream = AsyncStream { continuation = $0 }
+        self.eventsStream = AsyncStream(bufferingPolicy: .bufferingNewest(Self.eventBufferLimit)) { continuation = $0 }
         self.continuation = continuation
     }
 
     public func events() -> AsyncStream<SparkDashClientEvent> { eventsStream }
 
+    /// Starts streaming. Safe to call again after `stop()`; it is a no-op while
+    /// a run is already in flight.
     public func start() {
-        guard runTask == nil else { return }
+        guard runTask == nil, continuation != nil else { return }
         running = true
         runTask = Task { await self.runLoop() }
     }
 
+    /// Stops streaming and releases the socket, leaving the client restartable.
+    /// The event stream is deliberately not finished here: doing so used to
+    /// make a later `start()` a silent no-op that emitted nothing forever.
     public func stop() {
         running = false
         runTask?.cancel()
@@ -117,6 +150,12 @@ public actor SparkDashClient {
         webSocket?.cancel(with: .goingAway, reason: nil)
         webSocket = nil
         emit(.state(.disconnected))
+    }
+
+    /// Terminal teardown: finishes the event stream so the consumer's
+    /// `for await` loop ends. The client cannot be restarted afterwards.
+    public func shutdown() {
+        stop()
         continuation?.finish()
         continuation = nil
     }
@@ -236,6 +275,7 @@ public actor SparkDashClient {
     private func runWebSocket() async throws {
         let task = session.webSocketTask(with: endpoint.webSocketURL)
         webSocket = task
+        lastPongAt = nil
         task.resume()
         reconnectAttempt = 0
         emit(.state(.connected))
@@ -245,21 +285,56 @@ public actor SparkDashClient {
                 group.addTask { try await self.receiveLoop(task) }
                 group.addTask { try await self.pingLoop(task) }
                 do {
-                    try await group.next()
+                    _ = try await group.next()
                 } catch {
+                    // Cancel the socket before draining the group: `receive()`
+                    // only returns once the task is cancelled, and the earliest
+                    // failure may have come from the ping loop instead.
+                    task.cancel(with: .goingAway, reason: nil)
                     group.cancelAll()
                     throw error
                 }
+                task.cancel(with: .goingAway, reason: nil)
                 group.cancelAll()
-                try await group.waitForAll()
             }
         } catch is CancellationError {
             throw CancellationError()
         } catch {
             task.cancel(with: .goingAway, reason: nil)
             webSocket = nil
+            emit(.diagnostic("Live stream ended: \(error.localizedDescription)"))
             throw SparkDashClientError.websocketUnavailable
         }
+    }
+
+    /// sparkDash deliberately skips broadcasting an unchanged snapshot
+    /// (PRD section 20), so frame silence is normal and cannot be used as a
+    /// liveness signal. Pings are the only signal, and a peer that stops
+    /// answering them leaves a socket that looks open forever: every frame and
+    /// every ping simply never arrives, and the menu bar keeps showing frozen
+    /// values.
+    ///
+    /// Pings are therefore fire-and-forget with a deadline. Nothing blocks on a
+    /// ping completion handler, so a wedged peer can never stall this loop, and
+    /// a missed reply cancels the socket so `receive()` fails and the reconnect
+    /// loop takes over.
+    private func pingLoop(_ task: URLSessionWebSocketTask) async throws {
+        while running && !Task.isCancelled {
+            try await Task.sleep(for: Self.pingInterval)
+            let sentAt = Date()
+            task.sendPing { [weak self] error in
+                guard error == nil else { return }
+                Task { await self?.notePong(at: sentAt) }
+            }
+            try await Task.sleep(for: Self.pongTimeout)
+            if let lastPongAt, lastPongAt >= sentAt { continue }
+            task.cancel(with: .goingAway, reason: nil)
+            throw SparkDashClientError.pongTimeout
+        }
+    }
+
+    private func notePong(at date: Date) {
+        lastPongAt = date
     }
 
     private func receiveLoop(_ task: URLSessionWebSocketTask) async throws {
@@ -299,25 +374,6 @@ public actor SparkDashClient {
             }
         }
         throw SparkDashClientError.websocketUnavailable
-    }
-
-    private func pingLoop(_ task: URLSessionWebSocketTask) async throws {
-        while running && !Task.isCancelled {
-            try await Task.sleep(nanoseconds: 15_000_000_000)
-            try await sendPing(task)
-        }
-    }
-
-    private func sendPing(_ task: URLSessionWebSocketTask) async throws {
-        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
-            task.sendPing { error in
-                if let error {
-                    continuation.resume(throwing: error)
-                } else {
-                    continuation.resume()
-                }
-            }
-        }
     }
 
     private func waitBeforeReconnect() async {
