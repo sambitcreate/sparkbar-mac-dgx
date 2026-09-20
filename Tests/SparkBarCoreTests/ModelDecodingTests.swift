@@ -50,6 +50,41 @@ struct ModelDecodingTests {
         #expect(envelope.sparks.count == 2)
         #expect(envelope.sparks[1].metrics?.llm?.count == 1)
         #expect(envelope.sparks[1].metrics?.llm?.first?.modelId == "valid")
+        #expect(envelope.hasUnreadableSparks == false)
+    }
+
+    /// A frame that silently loses Sparks must be reported, not presented as a
+    /// smaller fleet: downstream history, alerts, and selection all trust it.
+    @Test func reportsSparksThatFailedToDecode() throws {
+        let data = Data(#"{"type":"snapshot","sparks":[{"id":"good","name":"Good"},{"name":"no-id"},{"id":"also-good","name":"Also good"}]}"#.utf8)
+        let envelope = try JSONDecoder().decode(SnapshotEnvelope.self, from: data)
+        #expect(envelope.sparks.map(\.id) == ["good", "also-good"])
+        #expect(envelope.droppedSparkCount == 1)
+        #expect(envelope.sparksFieldIsUnreadable == false)
+        #expect(envelope.hasUnreadableSparks)
+    }
+
+    @Test func reportsASparkListThatIsPresentButNotAnArray() throws {
+        let data = Data(#"{"type":"snapshot","sparks":"nope"}"#.utf8)
+        let envelope = try JSONDecoder().decode(SnapshotEnvelope.self, from: data)
+        #expect(envelope.sparks.isEmpty)
+        #expect(envelope.sparksFieldIsUnreadable)
+        #expect(envelope.hasUnreadableSparks)
+    }
+
+    @Test func absentSparkListIsNotReportedAsUnreadable() throws {
+        let data = Data(#"{"type":"snapshot"}"#.utf8)
+        let envelope = try JSONDecoder().decode(SnapshotEnvelope.self, from: data)
+        #expect(envelope.sparks.isEmpty)
+        #expect(envelope.sparksFieldIsUnreadable == false)
+        #expect(envelope.hasUnreadableSparks == false)
+    }
+
+    @Test func healthyFixturesReportNoDroppedSparks() throws {
+        for fixture in ["snapshot-live", "snapshot-multi", "snapshot-host", "snapshot-comfy", "snapshot-network", "snapshot-unknown"] {
+            let envelope = try TestFixtures.decodeEnvelope(fixture)
+            #expect(envelope.hasUnreadableSparks == false, "\(fixture) reported unreadable Sparks")
+        }
     }
 
     @Test func decodesGPUHostSnapshotWithTailscaleAndPrefillSplit() throws {
