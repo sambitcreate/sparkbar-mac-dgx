@@ -33,7 +33,7 @@ jobs:
         # Pinned to a commit, not the mutable `v0` tag. This action receives
         # every provider API key below, so a retag upstream would otherwise run
         # attacker code with them. Dependabot keeps the pin current.
-        uses: pullfrog/pullfrog@ce127b38d7f0c6c5e2c40ccd290adc4c5652357f # v0 (0.1.82)
+        uses: pullfrog/pullfrog@d46191b27741017dfac20431107fb3c6588ca667 # v0 (0.1.82)
         with:
           prompt: ${{ inputs.prompt }}
         env:
