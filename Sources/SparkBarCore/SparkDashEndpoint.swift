@@ -69,6 +69,13 @@ public struct SparkDashEndpoint: Equatable, Sendable {
         }
 
         let sanitized = normalizedURL.absoluteString
+        // Foundation versions differ in whether a percent-encoded DNS host
+        // fails re-serialization. Reject it explicitly so malformed hosts
+        // cannot pass validation on the minimum supported macOS version.
+        if let encodedHost = components?.percentEncodedHost,
+           encodedHost.contains("%"), !encodedHost.hasPrefix("[") {
+            throw SparkDashEndpointError.unusableURL(sanitized)
+        }
         guard let apiBase = Self.derivedURL(
             from: normalizedURL,
             scheme: Self.httpScheme(for: scheme),

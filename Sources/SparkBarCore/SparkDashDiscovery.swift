@@ -388,13 +388,16 @@ extension SparkDashScanner {
     }
 
     static func baseURL(host rawHost: String, port: UInt16) -> URL? {
-        guard port > 0, var host = normalizedHost(rawHost) else { return nil }
-        if host.contains(":") {
-            host = "[\(host.replacingOccurrences(of: "%", with: "%25"))]"
-        }
+        guard port > 0, let host = normalizedHost(rawHost) else { return nil }
         var components = URLComponents()
         components.scheme = "http"
-        components.host = host
+        if host.contains(":") {
+            // `host` percent-escapes again on older Foundation versions;
+            // percentEncodedHost preserves the IPv6 zone separator exactly.
+            components.percentEncodedHost = "[\(host.replacingOccurrences(of: "%", with: "%25"))]"
+        } else {
+            components.host = host
+        }
         components.port = Int(port)
         return components.url
     }
