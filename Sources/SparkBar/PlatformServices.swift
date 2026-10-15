@@ -35,6 +35,9 @@ final class NotificationService: NSObject, UNUserNotificationCenterDelegate {
 
     override init() {
         super.init()
+    }
+
+    func activate() {
         center.delegate = self
     }
 

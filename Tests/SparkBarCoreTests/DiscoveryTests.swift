@@ -118,4 +118,78 @@ struct DiscoveryTests {
         let payload = Data("HTTP/1.0 200 OK\r\nContent-Length: 2\r\n\r\n{}".utf8)
         #expect(String(data: TailscaleLocalAPI.httpBody(from: payload) ?? Data(), encoding: .utf8) == "{}")
     }
+
+    @Test func waitsForWholeHTTPBodyAndChecksStatus() {
+        let headers = "HTTP/1.1 200 OK\r\nContent-Length: 6\r\n\r\n"
+        #expect(TailscaleLocalAPI.httpBody(from: Data((headers + "abc").utf8), isComplete: false) == nil)
+        #expect(TailscaleLocalAPI.httpBody(from: Data((headers + "abc").utf8), isComplete: true) == nil)
+        #expect(String(data: TailscaleLocalAPI.httpBody(from: Data((headers + "abcdef").utf8), isComplete: false) ?? Data(), encoding: .utf8) == "abcdef")
+        #expect(TailscaleLocalAPI.httpBody(from: Data("HTTP/1.1 403 Forbidden\r\nContent-Length: 2\r\n\r\n{}".utf8)) == nil)
+        #expect(TailscaleLocalAPI.httpBody(from: Data("HTTP/1.1 200 OK\r\n\r\n{}".utf8), isComplete: false) == nil)
+        #expect(TailscaleLocalAPI.httpBody(from: Data("HTTP/1.1 200 OK\r\n\r\n{}".utf8), isComplete: true) == Data("{}".utf8))
+    }
+
+    @Test func decodesChunkedHTTPBodyOnlyWhenComplete() {
+        let response = "HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n2\r\n{}\r\n0\r\n\r\n"
+        #expect(TailscaleLocalAPI.httpBody(from: Data(response.dropLast(2).utf8), isComplete: false) == nil)
+        #expect(TailscaleLocalAPI.httpBody(from: Data(response.utf8), isComplete: false) == Data("{}".utf8))
+    }
+
+    @Test func buildsIPv6URLAndRejectsMalformedKnownHosts() {
+        #expect(SparkDashScanner.baseURL(host: "fe80::1", port: 5555)?.absoluteString == "http://[fe80::1]:5555")
+        #expect(SparkDashScanner.baseURL(host: "fe80::1%en0", port: 5555)?.absoluteString == "http://[fe80::1%25en0]:5555")
+        #expect(SparkDashScanner.baseURL(host: "[::1]", port: 8000)?.absoluteString == "http://[::1]:8000")
+        #expect(SparkDashScanner.baseURL(host: "spark.local", port: 7777)?.absoluteString == "http://spark.local:7777")
+        #expect(SparkDashScanner.baseURL(host: "host.local/path", port: 5555) == nil)
+        #expect(SparkDashScanner.baseURL(host: "user@host.local", port: 5555) == nil)
+        #expect(SparkDashScanner.baseURL(host: "host.local:5555", port: 5555) == nil)
+        #expect(SparkDashScanner.baseURL(host: "999.999.999.999", port: 5555) == nil)
+        #expect(SparkDashScanner.baseURL(host: "host.local", port: 0) == nil)
+    }
+
+    @Test func validatesBonjourCandidateThroughSparkDashAPI() async {
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [DiscoveryMockURLProtocol.self]
+        let session = URLSession(configuration: configuration)
+        defer {
+            DiscoveryMockURLProtocol.handler = nil
+            session.invalidateAndCancel()
+        }
+        let baseURL = URL(string: "http://[::1]:5555")!
+        let isCancelled: @Sendable () -> Bool = { false }
+
+        DiscoveryMockURLProtocol.handler = { request in
+            #expect(request.url?.path == "/api/sparks")
+            let response = HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: "HTTP/1.1", headerFields: nil)!
+            return (response, Data(#"{"sparks":[{"id":"one","name":"DGX"}]}"#.utf8))
+        }
+        let valid = await SparkDashScanner.validateSparkDash(at: baseURL, preferredName: "Advertised SparkDash", session: session, source: .mdns, isCancelled: isCancelled)
+        #expect(valid?.displayURL == "http://[::1]:5555")
+        #expect(valid?.name == "Advertised SparkDash")
+        #expect(valid?.sparkCount == 1)
+
+        DiscoveryMockURLProtocol.handler = { request in
+            let response = HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: "HTTP/1.1", headerFields: nil)!
+            return (response, Data(#"{"unrelated":true}"#.utf8))
+        }
+        let unrelated = await SparkDashScanner.validateSparkDash(at: baseURL, session: session, source: .mdns, isCancelled: isCancelled)
+        #expect(unrelated == nil)
+    }
+}
+
+private final class DiscoveryMockURLProtocol: URLProtocol {
+    nonisolated(unsafe) static var handler: ((URLRequest) -> (HTTPURLResponse, Data))?
+
+    override class func canInit(with request: URLRequest) -> Bool { true }
+    override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
+
+    override func startLoading() {
+        guard let handler = Self.handler else { return }
+        let (response, data) = handler(request)
+        client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
+        client?.urlProtocol(self, didLoad: data)
+        client?.urlProtocolDidFinishLoading(self)
+    }
+
+    override func stopLoading() {}
 }

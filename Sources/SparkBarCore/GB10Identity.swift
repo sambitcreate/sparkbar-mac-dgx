@@ -22,14 +22,17 @@ public enum GB10Identity: Sendable {
     }
 
     public static func match(kind: String?, name: String?, id: String?, hardware: HardwareInfo?) -> Match? {
-        if !SparkSnapshot.isGPUHost(kind: kind) {
+        if kind?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == "spark" {
             return Match(family: "GB10", confidence: .kindSpark)
         }
 
         if let chipMatch = matchChip(hardware: hardware) {
             return chipMatch
         }
-        if let aliasMatch = matchAlias(name: name, id: id, hardware: hardware) {
+        // A missing or unrecognized kind does not establish the hardware family.
+        // Host names are useful aliases only after the API explicitly calls it a host.
+        if kind?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == "host",
+           let aliasMatch = matchAlias(name: name, id: id, hardware: hardware) {
             return aliasMatch
         }
         return nil

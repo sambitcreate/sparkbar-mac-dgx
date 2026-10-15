@@ -4,10 +4,20 @@ import SparkBarCore
 
 @Suite("GB10 identity")
 struct GB10IdentityTests {
-    @Test func missingOrSparkKindMatchesAsKindSpark() {
-        #expect(GB10Identity.match(kind: nil, name: "Anything", id: "x", hardware: nil)?.confidence == .kindSpark)
+    @Test func onlyExplicitSparkKindMatchesAsKindSpark() {
+        #expect(GB10Identity.match(kind: nil, name: "Anything", id: "x", hardware: nil) == nil)
         #expect(GB10Identity.match(kind: "spark", name: "DGX", id: "dgx1", hardware: nil)?.confidence == .kindSpark)
         #expect(GB10Identity.match(kind: "SPARK", name: nil, id: nil, hardware: nil)?.family == "GB10")
+        #expect(GB10Identity.match(kind: "other", name: "Anything", id: "x", hardware: nil) == nil)
+        #expect(GB10Identity.match(kind: "", name: "GX10", id: nil, hardware: nil) == nil)
+    }
+
+    @Test func unknownKindNeedsPositiveChipSignal() throws {
+        let hardware = try decodeHardware("""
+        {"device":"OEM box","cpuModel":"NVIDIA GB10","gpuChip":"GB10"}
+        """)
+        #expect(GB10Identity.match(kind: nil, name: "generic", id: nil, hardware: hardware)?.confidence == .chip)
+        #expect(GB10Identity.match(kind: "unrecognized", name: "GX10", id: nil, hardware: nil) == nil)
     }
 
     @Test(arguments: [
@@ -60,7 +70,7 @@ struct GB10IdentityTests {
         #expect(GB10Identity.match(kind: "host", name: "spark", id: "nano", hardware: nil) == nil)
     }
 
-    @Test func snapshotLiveSparkMatchesKindSpark() throws {
+    @Test func snapshotWithoutKindMatchesPositiveChipSignal() throws {
         let envelope = try TestFixtures.decodeEnvelope("snapshot-live")
         let spark = try #require(envelope.sparks.first)
         let match = GB10Identity.match(
@@ -70,7 +80,7 @@ struct GB10IdentityTests {
             hardware: spark.hardware
         )
         #expect(match?.family == "GB10")
-        #expect(match?.confidence == .kindSpark)
+        #expect(match?.confidence == .chip)
     }
 
     private func decodeHardware(_ json: String) throws -> HardwareInfo {

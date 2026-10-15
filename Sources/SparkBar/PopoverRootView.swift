@@ -39,7 +39,9 @@ struct PopoverRootView: View {
                                 isServerLive: model.connectionState.isLive,
                                 isPolling: model.connectionState == .apiReachableLiveStreamUnavailable,
                                 temperatureUnit: model.effectiveTemperatureUnit,
-                                history: model.history.samples(for: snapshot.id)
+                                history: model.history.samples(for: snapshot.id),
+                                archivedHistory: model.history.archiveSamples(for: snapshot.id),
+                                outages: model.history.outages
                             )
                         } else if let snapshot = model.selectedSnapshot {
                             SparkDetailView(
@@ -47,7 +49,9 @@ struct PopoverRootView: View {
                                 isServerLive: model.connectionState.isLive,
                                 isPolling: model.connectionState == .apiReachableLiveStreamUnavailable,
                                 temperatureUnit: model.effectiveTemperatureUnit,
-                                history: model.history.samples(for: snapshot.id)
+                                history: model.history.samples(for: snapshot.id),
+                                archivedHistory: model.history.archiveSamples(for: snapshot.id),
+                                outages: model.history.outages
                             )
                         }
                     }
@@ -61,6 +65,7 @@ struct PopoverRootView: View {
         }
         .frame(width: Self.contentSize.width, height: Self.contentSize.height)
         .background(.regularMaterial)
+        .modifier(InsecureConnectionAlert(model: model))
         .onChange(of: model.snapshots.map(\.id), initial: true) { _, ids in
             if case .spark(let id) = selectedSection, !ids.contains(id) {
                 selectedSection = .overview
@@ -262,7 +267,7 @@ private struct ConnectionView: View {
 
     private var scanSection: some View {
         VStack(alignment: .leading, spacing: 12) {
-            Text("sparkDash runs on your DGX over the LAN or Tailscale, not on this Mac.")
+            Text("sparkDash can run on this Mac or on another host reachable over LAN or Tailscale.")
                 .font(.callout)
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
@@ -352,7 +357,7 @@ private struct SparkDashSetupCard: View {
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .background(.black.opacity(0.18), in: RoundedRectangle(cornerRadius: 8))
 
-            Text("Then connect using the DGX address on your LAN or Tailscale (for example http://<sparkDash-host>:5555). sparkDash binds to 127.0.0.1 by default, so a remote Mac needs BIND_HOST=0.0.0.0 or Docker Compose. Optional Bonjour: SPARKDASH_BONJOUR=1 advertises _sparkdash._tcp for Scan.")
+            Text("Connect to http://localhost:5555 when sparkDash runs on this Mac, or use the host’s LAN or Tailscale address. For a remote host, configure sparkDash to listen beyond 127.0.0.1. Optional Bonjour: SPARKDASH_BONJOUR=1 advertises _sparkdash._tcp for Scan.")
                 .font(.caption2)
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)

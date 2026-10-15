@@ -75,4 +75,53 @@ struct HistoryTests {
         history.sample([host], at: Date(timeIntervalSince1970: 1))
         #expect(history.samples(for: "box").first?.memoryPercentage == 75)
     }
+
+    @Test func archivesOnePointPerMinuteAndKeepsRecentSamples() {
+        var history = HistoryStore(maxSamples: 2, maxArchiveSamples: 3)
+        let start = Date(timeIntervalSince1970: 60)
+        for (offset, gpu) in [(0, 10.0), (2, 20.0), (60, 30.0), (120, 40.0), (180, 50.0)] {
+            history.sample([makeSnapshot(id: "one", name: "One", gpu: gpu)],
+                           at: start.addingTimeInterval(Double(offset)))
+        }
+        #expect(history.samples(for: "one").count == 2)
+        #expect(history.archiveSamples(for: "one").map(\.gpuUsage) == [30, 40, 50])
+        #expect(history.exportCSV(for: "one").components(separatedBy: "metric,").count - 1 == 3)
+    }
+
+    @Test func persistsHistoryAndOutageTimelineAcrossRelaunch() throws {
+        let file = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString)
+            .appendingPathComponent("history.json")
+        defer { try? FileManager.default.removeItem(at: file.deletingLastPathComponent()) }
+        let start = Date.now.addingTimeInterval(-60)
+        var history = HistoryStore(maxSamples: 2)
+        history.sample([makeSnapshot(id: "one", name: "One", gpu: 42)], at: start)
+        history.recordConnectivity(isConnected: true, at: start)
+        history.recordConnectivity(isConnected: false, at: start.addingTimeInterval(5))
+        history.recordConnectivity(isConnected: false, at: start.addingTimeInterval(6))
+        history.recordConnectivity(isConnected: true, at: start.addingTimeInterval(10))
+        try history.save(to: file)
+
+        let restored = try HistoryStore.load(from: file)
+        #expect(restored == history)
+        #expect(restored.archiveSamples(for: "one").count == 1)
+        #expect(restored.outages == [HistoryOutage(start: start.addingTimeInterval(5),
+                                                   end: start.addingTimeInterval(10))])
+        #expect(restored.exportCSV(for: "one").contains("outage,"))
+    }
+
+    @Test func discardsExpiredHistoryWhenLoading() throws {
+        let file = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString)
+            .appendingPathComponent("history.json")
+        defer { try? FileManager.default.removeItem(at: file.deletingLastPathComponent()) }
+        var history = HistoryStore()
+        history.sample([makeSnapshot(id: "one", name: "One", gpu: 10)],
+                       at: Date.now.addingTimeInterval(-8 * 24 * 60 * 60))
+        try history.save(to: file)
+
+        let restored = try HistoryStore.load(from: file)
+        #expect(restored.samples(for: "one").isEmpty)
+        #expect(restored.archiveSamples(for: "one").isEmpty)
+    }
 }

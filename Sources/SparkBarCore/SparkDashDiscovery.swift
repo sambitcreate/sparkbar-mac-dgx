@@ -6,6 +6,7 @@ public enum SparkDashDiscoverySource: String, Sendable, Equatable {
     case mdns
     case probe
     case tailnet
+    case knownHost
 }
 
 public enum SparkDashDiscoveryPhase: String, Sendable, Equatable {
@@ -45,18 +46,34 @@ public struct SparkDashScanOptions: Equatable, Sendable {
     public var probeLAN: Bool
     public var bonjour: Bool
     public var tailscaleLocalAPI: Bool
+    /// Port used for LAN, tailnet, and known-host probes. Bonjour uses its advertised port.
+    public var port: UInt16
+    /// Optional DNS name or IP address to probe without sweeping a subnet.
+    public var knownHost: String?
 
-    public init(probeLAN: Bool = true, bonjour: Bool = false, tailscaleLocalAPI: Bool = false) {
+    public init(
+        probeLAN: Bool = true,
+        bonjour: Bool = false,
+        tailscaleLocalAPI: Bool = false,
+        port: UInt16 = 5555,
+        knownHost: String? = nil
+    ) {
         self.probeLAN = probeLAN
         self.bonjour = bonjour
         self.tailscaleLocalAPI = tailscaleLocalAPI
+        self.port = port
+        self.knownHost = knownHost
     }
 
     public static let `default` = SparkDashScanOptions()
 }
 
+public struct SparkDashScanProgress: Equatable, Sendable {
+    public let checked: Int
+    public let total: Int
+}
+
 public actor SparkDashScanner {
-    private static let sparkDashPort: UInt16 = 5555
     private static let probeConcurrency = 24
     private static let tcpProbeTimeout: TimeInterval = 0.75
     private static let httpTimeout: TimeInterval = 1.0
@@ -85,13 +102,44 @@ public actor SparkDashScanner {
         }
     }
 
+    final class ProgressTracker: @unchecked Sendable {
+        private let lock = NSLock()
+        private let callback: (@Sendable (SparkDashScanProgress) -> Void)?
+        private var checked = 0
+        private var total = 0
+
+        init(callback: (@Sendable (SparkDashScanProgress) -> Void)?) {
+            self.callback = callback
+            callback?(SparkDashScanProgress(checked: 0, total: 0))
+        }
+
+        func addTargets(_ count: Int) {
+            guard count > 0 else { return }
+            lock.lock()
+            total += count
+            callback?(SparkDashScanProgress(checked: checked, total: total))
+            lock.unlock()
+        }
+
+        func didCheckTarget() {
+            lock.lock()
+            checked += 1
+            callback?(SparkDashScanProgress(checked: checked, total: total))
+            lock.unlock()
+        }
+    }
+
     private let cancellation = CancellationFlag()
     private var activeSession: URLSession?
 
     public init() {}
 
-    public func scan(_ options: SparkDashScanOptions = .default) async -> Result<[SparkDashDiscoveryHit], Error> {
+    public func scan(
+        _ options: SparkDashScanOptions = .default,
+        progress: (@Sendable (SparkDashScanProgress) -> Void)? = nil
+    ) async -> Result<[SparkDashDiscoveryHit], Error> {
         cancellation.reset()
+        let tracker = ProgressTracker(callback: progress)
 
         let configuration = URLSessionConfiguration.ephemeral
         configuration.timeoutIntervalForRequest = Self.httpTimeout
@@ -112,11 +160,13 @@ public actor SparkDashScanner {
             try Task.checkCancellation()
             if isCancelled() { return .failure(SparkDashDiscoveryError.cancelled) }
 
-            async let mdnsHits = Self.bonjourHits(enabled: options.bonjour, isCancelled: isCancelled)
-            async let probeHits = Self.lanHits(enabled: options.probeLAN, session: session, isCancelled: isCancelled)
-            async let tailnetHits = Self.tailscaleHits(enabled: options.tailscaleLocalAPI, session: session, isCancelled: isCancelled)
+            async let mdnsHits = Self.bonjourHits(enabled: options.bonjour, session: session, progress: tracker, isCancelled: isCancelled)
+            async let probeHits = Self.lanHits(enabled: options.probeLAN, port: options.port, session: session, progress: tracker, isCancelled: isCancelled)
+            async let tailnetHits = Self.tailscaleHits(enabled: options.tailscaleLocalAPI, port: options.port, session: session, progress: tracker, isCancelled: isCancelled)
+            async let knownHostHit = Self.knownHostHit(host: options.knownHost, port: options.port, session: session, progress: tracker, isCancelled: isCancelled)
 
             var hits = try await mdnsHits + tailnetHits + probeHits
+            if let knownHostHit = await knownHostHit { hits.append(knownHostHit) }
             if isCancelled() {
                 return .failure(SparkDashDiscoveryError.cancelled)
             }
@@ -169,28 +219,39 @@ final class ResumeBox<T: Sendable>: @unchecked Sendable {
 // MARK: - Local network probing
 
 extension SparkDashScanner {
-    static func bonjourHits(enabled: Bool, isCancelled: @Sendable @escaping () -> Bool) async throws -> [SparkDashDiscoveryHit] {
+    static func bonjourHits(enabled: Bool, session: URLSession, progress: ProgressTracker, isCancelled: @Sendable @escaping () -> Bool) async throws -> [SparkDashDiscoveryHit] {
         guard enabled else { return [] }
-        return try await discoverViaBonjour(isCancelled: isCancelled)
+        return try await discoverViaBonjour(session: session, progress: progress, isCancelled: isCancelled)
     }
 
-    static func lanHits(enabled: Bool, session: URLSession, isCancelled: @Sendable @escaping () -> Bool) async throws -> [SparkDashDiscoveryHit] {
+    static func lanHits(enabled: Bool, port: UInt16, session: URLSession, progress: ProgressTracker, isCancelled: @Sendable @escaping () -> Bool) async throws -> [SparkDashDiscoveryHit] {
         guard enabled else { return [] }
-        return try await probeLocalRFC1918(session: session, isCancelled: isCancelled)
+        return try await probeLocalRFC1918(port: port, session: session, progress: progress, isCancelled: isCancelled)
     }
 
-    static func tailscaleHits(enabled: Bool, session: URLSession, isCancelled: @Sendable @escaping () -> Bool) async throws -> [SparkDashDiscoveryHit] {
+    static func tailscaleHits(enabled: Bool, port: UInt16, session: URLSession, progress: ProgressTracker, isCancelled: @Sendable @escaping () -> Bool) async throws -> [SparkDashDiscoveryHit] {
         guard enabled else { return [] }
-        return try await probeTailscalePeers(session: session, isCancelled: isCancelled)
+        return try await probeTailscalePeers(port: port, session: session, progress: progress, isCancelled: isCancelled)
+    }
+
+    static func knownHostHit(host: String?, port: UInt16, session: URLSession, progress: ProgressTracker, isCancelled: @Sendable @escaping () -> Bool) async -> SparkDashDiscoveryHit? {
+        guard let host, baseURL(host: host, port: port) != nil else { return nil }
+        progress.addTargets(1)
+        let hit = await probeSparkDash(at: host, port: port, session: session, source: .knownHost, isCancelled: isCancelled)
+        progress.didCheckTarget()
+        return hit
     }
 
     static func probeLocalRFC1918(
+        port: UInt16,
         session: URLSession,
+        progress: ProgressTracker,
         isCancelled: @Sendable @escaping () -> Bool
     ) async throws -> [SparkDashDiscoveryHit] {
         let selfAddresses = Set(LocalNetworkEnumeration.localIPv4Addresses())
         let targets = LocalNetworkEnumeration.probeTargets(excluding: selfAddresses)
         guard !targets.isEmpty else { return [] }
+        progress.addTargets(targets.count)
 
         return try await withThrowingTaskGroup(of: SparkDashDiscoveryHit?.self) { group in
             var iterator = targets.makeIterator()
@@ -203,7 +264,9 @@ extension SparkDashScanner {
                 group.addTask {
                     if isCancelled() { return nil }
                     try Task.checkCancellation()
-                    return await probeSparkDash(at: target, session: session, source: .probe, isCancelled: isCancelled)
+                    let hit = await probeSparkDash(at: target, port: port, session: session, source: .probe, isCancelled: isCancelled)
+                    progress.didCheckTarget()
+                    return hit
                 }
             }
 
@@ -228,25 +291,31 @@ extension SparkDashScanner {
     }
 
     static func probeTailscalePeers(
+        port: UInt16,
         session: URLSession,
+        progress: ProgressTracker,
         isCancelled: @Sendable @escaping () -> Bool
     ) async throws -> [SparkDashDiscoveryHit] {
         let peers = await TailscaleLocalAPI.fetchPeerTargets(session: session, isCancelled: isCancelled)
         guard !peers.isEmpty else { return [] }
         if isCancelled() { throw SparkDashDiscoveryError.cancelled }
+        progress.addTargets(peers.count)
 
         return try await withThrowingTaskGroup(of: SparkDashDiscoveryHit?.self) { group in
             var hits: [SparkDashDiscoveryHit] = []
             for peer in peers {
                 group.addTask {
                     if isCancelled() { return nil }
-                    return await probeSparkDash(
+                    let hit = await probeSparkDash(
                         at: peer.ipv4,
                         preferredName: peer.name,
+                        port: port,
                         session: session,
                         source: .tailnet,
                         isCancelled: isCancelled
                     )
+                    progress.didCheckTarget()
+                    return hit
                 }
             }
             while let result = try await group.next() {
@@ -265,18 +334,31 @@ extension SparkDashScanner {
     static func probeSparkDash(
         at ip: String,
         preferredName: String? = nil,
+        port: UInt16,
         session: URLSession,
         source: SparkDashDiscoverySource,
         isCancelled: @Sendable @escaping () -> Bool
     ) async -> SparkDashDiscoveryHit? {
         if isCancelled() { return nil }
-        guard await isTCPPortOpen(host: ip, port: sparkDashPort, timeout: tcpProbeTimeout) else {
+        guard let baseURL = baseURL(host: ip, port: port) else { return nil }
+        let connectionHost = normalizedHost(ip)!
+        guard await isTCPPortOpen(host: connectionHost, port: port, timeout: tcpProbeTimeout) else {
             return nil
         }
         if isCancelled() { return nil }
 
-        let urlString = "http://\(ip):\(sparkDashPort)"
-        guard let url = URL(string: "\(urlString)/api/sparks") else { return nil }
+        return await validateSparkDash(at: baseURL, preferredName: preferredName, session: session, source: source, isCancelled: isCancelled)
+    }
+
+    static func validateSparkDash(
+        at baseURL: URL,
+        preferredName: String? = nil,
+        session: URLSession,
+        source: SparkDashDiscoverySource,
+        isCancelled: @Sendable @escaping () -> Bool
+    ) async -> SparkDashDiscoveryHit? {
+        if isCancelled() { return nil }
+        let url = baseURL.appendingPathComponent("api/sparks")
 
         var request = URLRequest(url: url)
         request.httpMethod = "GET"
@@ -291,7 +373,8 @@ extension SparkDashScanner {
             }
             let list = try JSONDecoder().decode(SparkListResponse.self, from: data)
             let trimmedName = preferredName?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-            let name = trimmedName.isEmpty ? (list.sparks.first?.name ?? ip) : trimmedName
+            let name = trimmedName.isEmpty ? (list.sparks.first?.name ?? baseURL.host ?? "SparkDash") : trimmedName
+            let urlString = baseURL.absoluteString
             return SparkDashDiscoveryHit(
                 id: urlString,
                 name: name,
@@ -302,6 +385,43 @@ extension SparkDashScanner {
         } catch {
             return nil
         }
+    }
+
+    static func baseURL(host rawHost: String, port: UInt16) -> URL? {
+        guard port > 0, var host = normalizedHost(rawHost) else { return nil }
+        if host.contains(":") {
+            host = "[\(host.replacingOccurrences(of: "%", with: "%25"))]"
+        }
+        var components = URLComponents()
+        components.scheme = "http"
+        components.host = host
+        components.port = Int(port)
+        return components.url
+    }
+
+    private static func normalizedHost(_ rawHost: String) -> String? {
+        var host = rawHost.trimmingCharacters(in: .whitespacesAndNewlines)
+        if host.hasPrefix("["), host.hasSuffix("]") {
+            host = String(host.dropFirst().dropLast())
+        }
+        guard !host.isEmpty else { return nil }
+        if host.contains(":") {
+            let parts = host.split(separator: "%", maxSplits: 1, omittingEmptySubsequences: false)
+            guard parts.count <= 2 else { return nil }
+            var address = in6_addr()
+            guard String(parts[0]).withCString({ inet_pton(AF_INET6, $0, &address) }) == 1 else { return nil }
+            if parts.count == 2 {
+                guard !parts[1].isEmpty,
+                      parts[1].utf8.allSatisfy({ ($0 >= 48 && $0 <= 57) || ($0 >= 65 && $0 <= 90) || ($0 >= 97 && $0 <= 122) || $0 == 45 || $0 == 95 || $0 == 46 }) else { return nil }
+            }
+            return host
+        }
+        guard host.count <= 253,
+              host.utf8.allSatisfy({ ($0 >= 48 && $0 <= 57) || ($0 >= 65 && $0 <= 90) || ($0 >= 97 && $0 <= 122) || $0 == 45 || $0 == 95 || $0 == 46 }),
+              host.split(separator: ".", omittingEmptySubsequences: false).dropLast(host.hasSuffix(".") ? 1 : 0).allSatisfy({ !$0.isEmpty && $0.count <= 63 }) else { return nil }
+        if host.utf8.allSatisfy({ ($0 >= 48 && $0 <= 57) || $0 == 46 }),
+           LocalNetworkEnumeration.IPv4Octets(dotted: host) == nil { return nil }
+        return host
     }
 
     static func isTCPPortOpen(host: String, port: UInt16, timeout: TimeInterval) async -> Bool {
@@ -316,8 +436,8 @@ extension SparkDashScanner {
             connection.stateUpdateHandler = { state in
                 switch state {
                 case .ready:
-                    connection.cancel()
                     box.complete(with: true)
+                    connection.cancel()
                 case .failed, .cancelled:
                     connection.cancel()
                     box.complete(with: false)
@@ -338,15 +458,17 @@ extension SparkDashScanner {
 // MARK: - Bonjour
 
 extension SparkDashScanner {
-    static func discoverViaBonjour(isCancelled: @Sendable @escaping () -> Bool) async throws -> [SparkDashDiscoveryHit] {
+    static func discoverViaBonjour(session: URLSession, progress: ProgressTracker, isCancelled: @Sendable @escaping () -> Bool) async throws -> [SparkDashDiscoveryHit] {
         let results = await browseBonjourServices(timeout: mdnsBrowseTimeout, isCancelled: isCancelled)
         if isCancelled() { throw SparkDashDiscoveryError.cancelled }
+        progress.addTargets(results.count)
 
         var hits: [SparkDashDiscoveryHit] = []
         for result in results {
             if isCancelled() { throw SparkDashDiscoveryError.cancelled }
-            guard let hit = await resolveBonjourResult(result, isCancelled: isCancelled) else { continue }
-            hits.append(hit)
+            let hit = await resolveBonjourResult(result, session: session, isCancelled: isCancelled)
+            progress.didCheckTarget()
+            if let hit { hits.append(hit) }
         }
         return hits
     }
@@ -379,6 +501,7 @@ extension SparkDashScanner {
 
     static func resolveBonjourResult(
         _ result: NWBrowser.Result,
+        session: URLSession,
         isCancelled: @Sendable @escaping () -> Bool
     ) async -> SparkDashDiscoveryHit? {
         guard case .service(let name, _, _, _) = result.endpoint else { return nil }
@@ -389,12 +512,13 @@ extension SparkDashScanner {
         guard case .hostPort(let host, let port) = resolved else { return nil }
         guard let hostString = describeHost(host) else { return nil }
 
-        let displayURL = "http://\(hostString):\(port.rawValue)"
-        return SparkDashDiscoveryHit(
-            id: displayURL,
-            name: name,
-            displayURL: displayURL,
-            source: .mdns
+        guard let baseURL = baseURL(host: hostString, port: port.rawValue) else { return nil }
+        return await validateSparkDash(
+            at: baseURL,
+            preferredName: name,
+            session: session,
+            source: .mdns,
+            isCancelled: isCancelled
         )
     }
 
@@ -406,8 +530,8 @@ extension SparkDashScanner {
             connection.stateUpdateHandler = { state in
                 switch state {
                 case .ready:
-                    connection.cancel()
                     box.complete(with: connection.currentPath?.remoteEndpoint ?? connection.endpoint)
+                    connection.cancel()
                 case .failed, .cancelled:
                     connection.cancel()
                     box.complete(with: nil)

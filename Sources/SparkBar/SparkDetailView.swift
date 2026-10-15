@@ -2,12 +2,15 @@ import AppKit
 import Charts
 import SparkBarCore
 import SwiftUI
+import UniformTypeIdentifiers
 struct SparkDetailView: View {
     let snapshot: SparkSnapshot
     let isServerLive: Bool
     let isPolling: Bool
     let temperatureUnit: TemperatureUnit
     let history: [MetricHistoryPoint]
+    let archivedHistory: [MetricHistoryPoint]
+    let outages: [HistoryOutage]
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
@@ -16,9 +19,6 @@ struct SparkDetailView: View {
                 GPUCard(snapshot: snapshot, temperatureUnit: temperatureUnit)
                 MemoryCard(snapshot: snapshot)
                 SystemSummary(snapshot: snapshot, temperatureUnit: temperatureUnit)
-                if !history.isEmpty {
-                    HistoryChart(history: history)
-                }
                 if let llms = snapshot.metrics?.llm, !llms.isEmpty {
                     SectionTitle("LLM Monitoring", systemImage: "text.bubble")
                     ForEach(llmEntries(llms: llms, snapshot: snapshot)) { entry in
@@ -45,6 +45,14 @@ struct SparkDetailView: View {
                 StorageCard(metrics: snapshot.metrics?.storage, isDisabled: snapshot.storagePollDisabled == true)
             } else {
                 OfflineCard()
+            }
+            if !history.isEmpty || !archivedHistory.isEmpty || !outages.isEmpty {
+                HistoryChart(
+                    sparkName: snapshot.name,
+                    history: history,
+                    archive: archivedHistory,
+                    outages: outages
+                )
             }
         }
     }
@@ -553,7 +561,21 @@ private struct SectionTitle: View {
 }
 
 private struct HistoryChart: View {
+    let sparkName: String
     let history: [MetricHistoryPoint]
+    let archive: [MetricHistoryPoint]
+    let outages: [HistoryOutage]
+
+    @State private var range: Range = .recent
+    @State private var exportError: String?
+
+    private enum Range: String, CaseIterable, Identifiable {
+        case recent = "30 minutes"
+        case day = "24 hours"
+        case week = "7 days"
+
+        var id: String { rawValue }
+    }
 
     /// The store keeps up to 900 samples per spark; rendering every point of
     /// both series on each snapshot is wasted work in a 120 pt chart.
@@ -561,35 +583,106 @@ private struct HistoryChart: View {
     /// range stays truthful.
     private static let renderLimit = 240
 
+    private var selectedPoints: [MetricHistoryPoint] {
+        switch range {
+        case .recent: history
+        case .day: archive.filter { $0.date >= .now.addingTimeInterval(-24 * 60 * 60) }
+        case .week: archive
+        }
+    }
+
     private var renderPoints: [MetricHistoryPoint] {
-        guard history.count > Self.renderLimit else { return history }
-        let step = Double(history.count - 1) / Double(Self.renderLimit - 1)
-        return (0..<Self.renderLimit).map { history[Int((Double($0) * step).rounded())] }
+        let points = selectedPoints
+        guard points.count > Self.renderLimit else { return points }
+        let step = Double(points.count - 1) / Double(Self.renderLimit - 1)
+        return (0..<Self.renderLimit).map { points[Int((Double($0) * step).rounded())] }
     }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
-            SectionTitle("Recent history", systemImage: "chart.xyaxis.line")
-            Chart(renderPoints) { point in
-                if let gpu = point.gpuUsage {
-                    LineMark(x: .value("Time", point.date), y: .value("Value", gpu))
-                        .foregroundStyle(by: .value("Metric", "GPU"))
+            HStack {
+                SectionTitle("History", systemImage: "chart.xyaxis.line")
+                Spacer()
+                Menu(range.rawValue) {
+                    ForEach(Range.allCases) { option in
+                        Button(option.rawValue) { range = option }
+                    }
                 }
-                if let memory = point.memoryPercentage {
-                    LineMark(x: .value("Time", point.date), y: .value("Value", memory))
-                        .foregroundStyle(by: .value("Metric", "Memory"))
+                .menuStyle(.borderlessButton)
+                .fixedSize()
+                Button {
+                    exportHistory()
+                } label: {
+                    Image(systemName: "square.and.arrow.up")
+                }
+                .buttonStyle(.borderless)
+                .help("Export history as CSV")
+            }
+            if renderPoints.isEmpty {
+                Text("No samples in this range yet")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .frame(maxWidth: .infinity, minHeight: 120)
+            } else {
+                Chart(renderPoints) { point in
+                    if let gpu = point.gpuUsage {
+                        LineMark(x: .value("Time", point.date), y: .value("Value", gpu))
+                            .foregroundStyle(by: .value("Metric", "GPU"))
+                    }
+                    if let memory = point.memoryPercentage {
+                        LineMark(x: .value("Time", point.date), y: .value("Value", memory))
+                            .foregroundStyle(by: .value("Metric", "Memory"))
+                    }
+                }
+                .chartYScale(domain: 0...100)
+                .chartForegroundStyleScale(["GPU": .blue, "Memory": .orange])
+                .chartLegend(position: .top, alignment: .leading)
+                .chartXAxis {
+                    AxisMarks(values: .automatic(desiredCount: 3))
+                }
+                .frame(height: 120)
+                .accessibilityLabel("GPU and memory history chart")
+            }
+            if !outages.isEmpty {
+                Text("Recent connection outages")
+                    .font(.caption.weight(.semibold))
+                ForEach(outages.suffix(3).reversed()) { outage in
+                    Text(outageText(outage))
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
                 }
             }
-            .chartYScale(domain: 0...100)
-            .chartForegroundStyleScale(["GPU": .blue, "Memory": .orange])
-            .chartLegend(position: .top, alignment: .leading)
-            .chartXAxis {
-                AxisMarks(values: .automatic(desiredCount: 3))
-            }
-            .frame(height: 120)
-            .accessibilityLabel("GPU and memory history chart")
         }
         .metricCard()
+        .alert("Could not export history", isPresented: Binding(
+            get: { exportError != nil },
+            set: { if !$0 { exportError = nil } }
+        )) {
+            Button("OK") { exportError = nil }
+        } message: {
+            Text(exportError ?? "Unknown error")
+        }
+    }
+
+    private func outageText(_ outage: HistoryOutage) -> String {
+        let start = outage.start.formatted(date: .abbreviated, time: .shortened)
+        guard let end = outage.end else { return "Since \(start)" }
+        let duration = Duration.seconds(end.timeIntervalSince(outage.start))
+        return "\(start) · \(duration.formatted())"
+    }
+
+    private func exportHistory() {
+        let panel = NSSavePanel()
+        panel.allowedContentTypes = [.commaSeparatedText]
+        let safeName = sparkName.replacingOccurrences(of: "/", with: "-")
+        panel.nameFieldStringValue = "\(safeName)-history.csv"
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        let csv = HistoryStore.exportCSV(recent: history, archive: archive, outages: outages)
+        do {
+            try csv.write(to: url, atomically: true, encoding: .utf8)
+        } catch {
+            exportError = error.localizedDescription
+        }
     }
 }
 

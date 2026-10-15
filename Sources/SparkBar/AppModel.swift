@@ -1,4 +1,5 @@
 import AppKit
+import CryptoKit
 import Observation
 import OSLog
 import SparkBarCore
@@ -28,11 +29,18 @@ final class AppModel {
     /// navigate to a spark's detail page. Consumed and cleared by the view.
     private(set) var focusedSparkID: String?
     private(set) var history = HistoryStore(maxSamples: 900)
+    private let historyDirectory: URL
+    private let systemServicesEnabled: Bool
+    private var currentHistoryURL: URL?
+    private var historyNeedsSave = false
+    private var lastHistorySaveAt: Date?
 
     var connectionSetupMode: ConnectionSetupMode = .scan
     private(set) var discoveryPhase: SparkDashDiscoveryPhase = .idle
     private(set) var discoveryHits: [SparkDashDiscoveryHit] = []
     private(set) var discoveryError: String?
+    private(set) var discoveryProgress: SparkDashScanProgress?
+    private(set) var pendingInsecureEndpoint: SparkDashEndpoint?
 
     var selectedSparkID: String? {
         didSet {
@@ -66,30 +74,17 @@ final class AppModel {
     /// history continuous instead of only recording changes.
     private static let historySampleInterval: Duration = .seconds(2)
 
-    init(defaults: UserDefaults = .standard) {
+    init(defaults: UserDefaults = .standard, historyDirectory: URL? = nil, systemServicesEnabled: Bool = true) {
         settings = SettingsStore(defaults: defaults)
+        self.systemServicesEnabled = systemServicesEnabled
+        self.historyDirectory = historyDirectory
+            ?? FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+                .appendingPathComponent("SparkBar", isDirectory: true)
         selectedSparkID = settings.selectedSparkID
         alertEngine = AlertEngine(
             thresholds: settings.alertThresholds,
             cooldown: settings.alertCooldownMinutes * 60
         )
-        migrateUnusedLocalhostEndpoint()
-    }
-
-    private static let unusedLocalhostEndpoints: Set<String> = [
-        "http://localhost:5555",
-        "http://127.0.0.1:5555",
-    ]
-
-    private func migrateUnusedLocalhostEndpoint() {
-        guard settings.lastSuccessfulEndpoint?.isEmpty ?? true,
-              Self.isUnusedLocalhost(settings.endpoint) else { return }
-        settings.endpoint = ""
-        settings.persist()
-    }
-
-    private static func isUnusedLocalhost(_ rawValue: String) -> Bool {
-        unusedLocalhostEndpoints.contains(rawValue.trimmingCharacters(in: .whitespacesAndNewlines).lowercased())
     }
 
     private var usableEndpointString: String? {
@@ -99,13 +94,11 @@ final class AppModel {
         }
         let draft = settings.endpoint.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !draft.isEmpty else { return nil }
-        if Self.isUnusedLocalhost(draft) { return nil }
         return draft
     }
 
     private func recordSuccessfulEndpoint() {
-        guard let endpoint = currentEndpoint?.displayString,
-              !Self.isUnusedLocalhost(endpoint) else { return }
+        guard let endpoint = currentEndpoint?.displayString else { return }
         settings.lastSuccessfulEndpoint = endpoint
         settings.persist()
     }
@@ -147,10 +140,13 @@ final class AppModel {
     func start() {
         guard !isStopping else { return }
         logger.info("Starting SparkBar")
-        do {
-            try launchAtLoginService.apply(desired: settings.launchAtLogin)
-        } catch {
-            lastError = "Launch at login could not be configured: \(error.localizedDescription)"
+        if systemServicesEnabled {
+            notificationService.activate()
+            do {
+                try launchAtLoginService.apply(desired: settings.launchAtLogin)
+            } catch {
+                lastError = "Launch at login could not be configured: \(error.localizedDescription)"
+            }
         }
         guard let raw = usableEndpointString,
               let endpoint = try? SparkDashEndpoint(raw) else {
@@ -162,6 +158,7 @@ final class AppModel {
 
     func stop() {
         isStopping = true
+        persistHistory(force: true)
         eventTask?.cancel()
         stopPollingFallback()
         stopHistorySampling()
@@ -188,6 +185,12 @@ final class AppModel {
     }
 
     func connect(to endpoint: SparkDashEndpoint) {
+        if endpoint.shouldWarnAboutInsecureRemote,
+           settings.approvedInsecureEndpoint != endpoint.displayString {
+            pendingInsecureEndpoint = endpoint
+            return
+        }
+        pendingInsecureEndpoint = nil
         isStopping = false
         eventTask?.cancel()
         stopPollingFallback()
@@ -196,6 +199,9 @@ final class AppModel {
         }
 
         let endpointChanged = currentEndpoint != endpoint
+        if endpointChanged {
+            persistHistory(force: true)
+        }
         currentEndpoint = endpoint
         settings.endpoint = endpoint.displayString
         settings.persist()
@@ -204,9 +210,16 @@ final class AppModel {
             configuredSparks = []
             serverSettings = nil
             lastSnapshotAt = nil
-            // A different sparkDash describes different machines, so the
-            // accumulated chart no longer applies to anything.
-            history = HistoryStore(maxSamples: 900)
+            let historyURL = historyFileURL(for: endpoint)
+            currentHistoryURL = historyURL
+            do {
+                history = try HistoryStore.load(from: historyURL, maxSamples: 900)
+            } catch {
+                history = HistoryStore(maxSamples: 900)
+                logger.error("History could not be loaded: \(error.localizedDescription, privacy: .public)")
+            }
+            historyNeedsSave = false
+            lastHistorySaveAt = nil
             fleetMerger.reset()
         }
         lastError = nil
@@ -219,10 +232,23 @@ final class AppModel {
             let events = await newClient.events()
             for await event in events {
                 guard !Task.isCancelled else { break }
+                guard self?.client === newClient else { break }
                 self?.handle(event)
             }
         }
         Task { await newClient.start() }
+    }
+
+    func confirmPendingInsecureConnection() {
+        guard let endpoint = pendingInsecureEndpoint else { return }
+        settings.approvedInsecureEndpoint = endpoint.displayString
+        settings.persist()
+        pendingInsecureEndpoint = nil
+        connect(to: endpoint)
+    }
+
+    func cancelPendingInsecureConnection() {
+        pendingInsecureEndpoint = nil
     }
 
     func reconnect() {
@@ -233,6 +259,7 @@ final class AppModel {
         switch event {
         case .state(let state):
             connectionState = state
+            recordHistoryConnectivity()
             logger.info("Connection state: \(state.shortLabel, privacy: .public)")
             switch state {
             case .apiReachableLiveStreamUnavailable:
@@ -246,12 +273,14 @@ final class AppModel {
                 lastError = message
             }
         case .connectionTested(let result):
+            guard result.endpoint == currentEndpoint else { return }
             configuredSparks = result.sparks
             serverSettings = result.settings
             recordSuccessfulEndpoint()
             logger.info("REST connection succeeded with \(result.sparkCount) Spark(s)")
         case .snapshot(let envelope):
             connectionState = .connected
+            recordHistoryConnectivity()
             recordSuccessfulEndpoint()
             logger.info("Received snapshot with \(envelope.sparks.count) Spark(s)")
             applySnapshot(envelope)
@@ -311,6 +340,7 @@ final class AppModel {
         eventTask = nil
         stopPollingFallback()
         stopHistorySampling()
+        persistHistory(force: true)
         if let client {
             Task { await client.shutdown() }
         }
@@ -334,18 +364,27 @@ final class AppModel {
         discoveryPhase = .scanning
         discoveryHits = []
         discoveryError = nil
+        discoveryProgress = nil
         logger.info("Starting sparkDash scan lan=\(self.settings.scanLAN) bonjour=\(self.settings.scanBonjour) tailscale=\(self.settings.scanTailscaleLocalAPI)")
+        let port = (1...65535).contains(settings.scanPort) ? UInt16(settings.scanPort) : 5555
         let options = SparkDashScanOptions(
             probeLAN: settings.scanLAN,
             bonjour: settings.scanBonjour,
-            tailscaleLocalAPI: settings.scanTailscaleLocalAPI
+            tailscaleLocalAPI: settings.scanTailscaleLocalAPI,
+            port: port,
+            knownHost: settings.scanKnownHost.trimmingCharacters(in: .whitespacesAndNewlines).nilIfEmpty
         )
-        scanTask = Task { [scanner, options] in
+        scanTask = Task { [weak self, scanner, options] in
             await scanner.cancel()
-            guard session == scanSession else { return }
-            let result = await scanner.scan(options)
+            guard let self, session == self.scanSession else { return }
+            let result = await scanner.scan(options) { [weak self] progress in
+                Task { @MainActor [weak self] in
+                    guard let self, session == self.scanSession else { return }
+                    self.discoveryProgress = progress
+                }
+            }
             await MainActor.run {
-                guard session == scanSession else { return }
+                guard session == self.scanSession else { return }
                 switch result {
                 case .success(let hits):
                     discoveryPhase = .completed
@@ -370,6 +409,7 @@ final class AppModel {
         if discoveryPhase == .scanning {
             discoveryPhase = .idle
         }
+        discoveryProgress = nil
         Task { await scanner.cancel() }
     }
 
@@ -413,6 +453,38 @@ final class AppModel {
     func sampleHistory() {
         guard !snapshots.isEmpty else { return }
         history.sample(snapshots)
+        historyNeedsSave = true
+        persistHistory(force: false)
+    }
+
+    private func historyFileURL(for endpoint: SparkDashEndpoint) -> URL {
+        let digest = SHA256.hash(data: Data(endpoint.displayString.utf8))
+        let identifier = digest.map { String(format: "%02x", $0) }.joined()
+        return historyDirectory.appendingPathComponent("\(identifier).json")
+    }
+
+    private func recordHistoryConnectivity() {
+        let before = history.outages
+        history.recordConnectivity(isConnected: isReceivingData)
+        if history.outages != before {
+            historyNeedsSave = true
+            persistHistory(force: false)
+        }
+    }
+
+    private func persistHistory(force: Bool) {
+        guard historyNeedsSave, let url = currentHistoryURL else { return }
+        let now = Date.now
+        if !force, let lastHistorySaveAt, now.timeIntervalSince(lastHistorySaveAt) < 30 {
+            return
+        }
+        do {
+            try history.save(to: url)
+            historyNeedsSave = false
+            lastHistorySaveAt = now
+        } catch {
+            logger.error("History could not be saved: \(error.localizedDescription, privacy: .public)")
+        }
     }
 
     private func startHistorySampling() {
@@ -543,6 +615,9 @@ final class SettingsStore {
     var scanLAN: Bool
     var scanBonjour: Bool
     var scanTailscaleLocalAPI: Bool
+    var scanPort: Int
+    var scanKnownHost: String
+    var approvedInsecureEndpoint: String?
 
     init(defaults: UserDefaults = .standard) {
         self.defaults = defaults
@@ -562,6 +637,9 @@ final class SettingsStore {
         scanLAN = saved?.scanLAN ?? true
         scanBonjour = saved?.scanBonjour ?? false
         scanTailscaleLocalAPI = saved?.scanTailscaleLocalAPI ?? false
+        scanPort = saved?.scanPort.flatMap { (1...65535).contains($0) ? $0 : nil } ?? 5555
+        scanKnownHost = saved?.scanKnownHost ?? ""
+        approvedInsecureEndpoint = saved?.approvedInsecureEndpoint
     }
 
     var alertThresholds: AlertThresholds {
@@ -584,7 +662,10 @@ final class SettingsStore {
             alertCooldownMinutes: alertCooldownMinutes,
             scanLAN: scanLAN,
             scanBonjour: scanBonjour,
-            scanTailscaleLocalAPI: scanTailscaleLocalAPI
+            scanTailscaleLocalAPI: scanTailscaleLocalAPI,
+            scanPort: scanPort,
+            scanKnownHost: scanKnownHost,
+            approvedInsecureEndpoint: approvedInsecureEndpoint
         )
         guard let data = try? JSONEncoder().encode(value) else { return }
         defaults.set(data, forKey: key)
@@ -606,5 +687,8 @@ final class SettingsStore {
         var scanLAN: Bool?
         var scanBonjour: Bool?
         var scanTailscaleLocalAPI: Bool?
+        var scanPort: Int?
+        var scanKnownHost: String?
+        var approvedInsecureEndpoint: String?
     }
 }

@@ -229,6 +229,7 @@ struct SettingsView: View {
         }
         .frame(minWidth: 520, minHeight: 580)
         .padding()
+        .modifier(InsecureConnectionAlert(model: model))
     }
 
     private var hasTypedEndpoint: Bool {

@@ -6,6 +6,7 @@ import Network
 public enum TailscaleLocalAPI {
     public static let statusPath = "/localapi/v0/status"
     public static let maxPeers = 48
+    private static let maxStatusResponseBytes = 8 * 1024 * 1024
 
     public struct PeerTarget: Equatable, Sendable {
         public var name: String
@@ -186,19 +187,90 @@ public enum TailscaleLocalAPI {
             }
             var next = buffer
             if let content { next.append(content) }
-            if isComplete || httpBody(from: next) != nil {
+            if next.count > maxStatusResponseBytes {
                 connection.cancel()
-                box.complete(with: httpBody(from: next))
+                box.complete(with: nil)
+                return
+            }
+            if let body = httpBody(from: next, isComplete: isComplete) {
+                box.complete(with: body)
+                connection.cancel()
+                return
+            }
+            if isComplete {
+                connection.cancel()
+                box.complete(with: nil)
                 return
             }
             receiveHTTPBody(on: connection, buffer: next, box: box)
         }
     }
 
-    static func httpBody(from response: Data) -> Data? {
+    /// Returns a body only after it is complete and the response status is successful.
+    /// Without a length header, completion is defined by EOF.
+    static func httpBody(from response: Data, isComplete: Bool = true) -> Data? {
         let separator = Data("\r\n\r\n".utf8)
         guard let range = response.range(of: separator) else { return nil }
-        return Data(response[range.upperBound...])
+        guard let header = String(data: response[..<range.lowerBound], encoding: .utf8) else { return nil }
+        let lines = header.components(separatedBy: "\r\n")
+        guard let statusLine = lines.first else { return nil }
+        let statusParts = statusLine.split(separator: " ", omittingEmptySubsequences: true)
+        guard statusParts.count >= 2,
+              statusParts[0].hasPrefix("HTTP/"),
+              let status = Int(statusParts[1]),
+              (200...299).contains(status) else { return nil }
+
+        var contentLength: Int?
+        var chunked = false
+        for line in lines.dropFirst() {
+            guard let colon = line.firstIndex(of: ":") else { continue }
+            let name = line[..<colon].lowercased()
+            let value = line[line.index(after: colon)...].trimmingCharacters(in: .whitespacesAndNewlines)
+            if name == "content-length" {
+                guard let length = Int(value), length >= 0, length <= maxStatusResponseBytes,
+                      contentLength == nil || contentLength == length else { return nil }
+                contentLength = length
+            } else if name == "transfer-encoding" {
+                chunked = value.lowercased().split(separator: ",").last?.trimmingCharacters(in: .whitespacesAndNewlines) == "chunked"
+            }
+        }
+
+        let body = Data(response[range.upperBound...])
+        if chunked { return decodedChunkedBody(body) }
+        if let contentLength {
+            guard body.count >= contentLength else { return nil }
+            return Data(body.prefix(contentLength))
+        }
+        return isComplete ? body : nil
+    }
+
+    private static func decodedChunkedBody(_ body: Data) -> Data? {
+        let lineBreak = Data("\r\n".utf8)
+        let trailerEnd = Data("\r\n\r\n".utf8)
+        var cursor = body.startIndex
+        var decoded = Data()
+        while cursor < body.endIndex {
+            guard let lineRange = body.range(of: lineBreak, in: cursor..<body.endIndex),
+                  let line = String(data: body[cursor..<lineRange.lowerBound], encoding: .ascii),
+                  let sizeText = line.split(separator: ";", maxSplits: 1).first,
+                  let size = Int(sizeText.trimmingCharacters(in: .whitespaces), radix: 16),
+                  size >= 0,
+                  size <= maxStatusResponseBytes - decoded.count else { return nil }
+            cursor = lineRange.upperBound
+            if size == 0 {
+                if body.range(of: lineBreak, in: cursor..<body.endIndex)?.lowerBound == cursor {
+                    return decoded
+                }
+                guard body.range(of: trailerEnd, in: cursor..<body.endIndex) != nil else { return nil }
+                return decoded
+            }
+            guard body.endIndex - cursor >= size + 2 else { return nil }
+            decoded.append(body[cursor..<(cursor + size)])
+            cursor += size
+            guard body[cursor..<(cursor + 2)] == lineBreak else { return nil }
+            cursor += 2
+        }
+        return nil
     }
 
     private static func macsysCredentials(in directory: URL, fileManager: FileManager) -> Credentials? {
