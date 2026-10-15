@@ -42,7 +42,11 @@ final class NotificationService: NSObject, UNUserNotificationCenterDelegate {
     }
 
     func requestPermission() async -> Bool {
-        (try? await center.requestAuthorization(options: [.alert, .sound])) ?? false
+        await withCheckedContinuation { continuation in
+            center.requestAuthorization(options: [.alert, .sound]) { granted, error in
+                continuation.resume(returning: error == nil && granted)
+            }
+        }
     }
 
     /// Delivers the events and returns a user-facing message when delivery
@@ -62,10 +66,13 @@ final class NotificationService: NSObject, UNUserNotificationCenterDelegate {
                 content: content,
                 trigger: nil
             )
-            do {
-                try await center.add(request)
-            } catch {
-                failure = "Notifications could not be delivered: \(error.localizedDescription)"
+            let errorMessage = await withCheckedContinuation { continuation in
+                center.add(request) { error in
+                    continuation.resume(returning: error?.localizedDescription)
+                }
+            }
+            if let errorMessage {
+                failure = "Notifications could not be delivered: \(errorMessage)"
             }
         }
         return failure
