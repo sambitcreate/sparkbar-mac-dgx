@@ -95,8 +95,34 @@ jobs:
           set -euo pipefail
           app=".build/Release/SparkBar.app"
           plutil -lint "$app/Contents/Info.plist"
+          plutil -extract NSLocalNetworkUsageDescription raw -o - "$app/Contents/Info.plist" | grep -q .
+          plutil -extract NSBonjourServices json -o - "$app/Contents/Info.plist" | grep -q '_sparkdash._tcp'
           test -x "$app/Contents/MacOS/SparkBar"
           # --deep is for verification, not signing: it would silently mis-sign
           # any nested content once a helper or framework is added.
           codesign --force --sign - "$app"
           codesign --verify --deep --strict "$app"
+
+  verify-minimum-macos:
+    name: Verify macOS 14
+    needs: detect
+    if: needs.detect.outputs.docs-only == 'false'
+    runs-on: macos-14
+    timeout-minutes: 30
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v6
+
+      - name: Select Swift 6 toolchain
+        run: sudo xcode-select -s /Applications/Xcode_16.2.app/Contents/Developer
+
+      - name: Show toolchain and OS
+        run: |
+          sw_vers
+          swift --version
+
+      - name: Run tests on minimum supported macOS
+        run: swift test
+
+      - name: Build packaged app on minimum supported macOS
+        run: ./scripts/build-app.sh

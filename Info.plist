@@ -20,7 +20,15 @@
 	<string>1</string>
 	<key>LSMinimumSystemVersion</key>
 	<string>14.0</string>
-	<!-- Optional: SparkBarRepositoryURL and SparkDashRepositoryURL (https). When set, Settings → About and the first-run card can open them. Forks should point these at their own docs. -->
+	<key>SparkBarRepositoryURL</key>
+	<string>https://github.com/sambitcreate/sparkbar-mac-dgx</string>
+	<!-- Add SparkDashRepositoryURL only after verifying the public repository URL. -->
+	<key>SparkBarUpdatesEnabled</key>
+	<false/>
+	<key>SUFeedURL</key>
+	<string>https://github.com/sambitcreate/sparkbar-mac-dgx/releases/latest/download/appcast.xml</string>
+	<key>SUPublicEDKey</key>
+	<string>6fCZ3eLq9F8oYsR1umHaiq6T4kaKRohiu+zl1yrg7Vk=</string>
 	<key>LSUIElement</key>
 	<true/>
 	<key>NSHighResolutionCapable</key>
@@ -40,8 +48,8 @@
 		     or a *.ts.net hostname, which are this app's headline deployment.
 		     Switching therefore needs verification against a real tailnet.
 		     The endpoint is chosen by the user, the client is GET-only, and the
-		     UI warns when a non-private host is configured over plain HTTP
-		     (SparkDashEndpoint.shouldWarnAboutInsecureRemote). -->
+		     UI requires confirmation before connecting to a public host over
+		     plain HTTP (SparkDashEndpoint.shouldWarnAboutInsecureRemote). -->
 		<key>NSAllowsArbitraryLoads</key>
 		<true/>
 	</dict>

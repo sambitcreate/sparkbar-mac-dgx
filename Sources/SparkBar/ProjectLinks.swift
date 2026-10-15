@@ -12,7 +12,7 @@ enum ProjectLinks {
             return nil
         }
         let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty, let url = URL(string: trimmed), url.scheme != nil else {
+        guard !trimmed.isEmpty, let url = URL(string: trimmed), url.scheme == "https", url.host != nil else {
             return nil
         }
         return url

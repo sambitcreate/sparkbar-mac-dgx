@@ -1,8 +1,7 @@
 name: Release macOS
 
-# Releases are intentional events: pushing a version tag (v*) publishes that
-# version, and manual dispatch builds a development release numbered
-# 0.1.<run number>. Plain pushes to main no longer publish releases.
+# Version tags publish signed, notarized releases. Manual dispatch verifies the
+# same distribution path and uploads an artifact without changing latest.
 on:
   push:
     tags:
@@ -27,7 +26,6 @@ jobs:
     environment: release
     env:
       SPARKBAR_BUILD: ${{ github.run_number }}
-      MACOS_SIGNING_ENABLED: ${{ vars.MACOS_SIGNING_ENABLED || 'false' }}
       MACOS_SIGNING_IDENTITY: ${{ vars.MACOS_SIGNING_IDENTITY }}
     steps:
       - name: Check out source
@@ -77,8 +75,25 @@ jobs:
       - name: Build packaged app
         run: ./scripts/build-app.sh
 
+      - name: Require public release credentials
+        env:
+          MACOS_CERTIFICATE_P12_BASE64: ${{ secrets.MACOS_CERTIFICATE_P12_BASE64 }}
+          MACOS_CERTIFICATE_PASSWORD: ${{ secrets.MACOS_CERTIFICATE_PASSWORD }}
+          APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
+          APPLE_API_ISSUER_ID: ${{ secrets.APPLE_API_ISSUER_ID }}
+          APPLE_API_PRIVATE_KEY_BASE64: ${{ secrets.APPLE_API_PRIVATE_KEY_BASE64 }}
+          SPARKLE_EDDSA_PRIVATE_KEY: ${{ secrets.SPARKLE_EDDSA_PRIVATE_KEY }}
+        run: |
+          set -euo pipefail
+          for name in MACOS_SIGNING_IDENTITY MACOS_CERTIFICATE_P12_BASE64 MACOS_CERTIFICATE_PASSWORD APPLE_API_KEY_ID APPLE_API_ISSUER_ID APPLE_API_PRIVATE_KEY_BASE64 SPARKLE_EDDSA_PRIVATE_KEY; do
+            if [ -z "${!name:-}" ]; then
+              echo "$name is required for a signed release" >&2
+              exit 78
+            fi
+          done
+          /usr/libexec/PlistBuddy -c 'Set :SparkBarUpdatesEnabled true' .build/Release/SparkBar.app/Contents/Info.plist
+
       - name: Import Developer ID certificate
-        if: ${{ env.MACOS_SIGNING_ENABLED == 'true' }}
         env:
           MACOS_CERTIFICATE_P12_BASE64: ${{ secrets.MACOS_CERTIFICATE_P12_BASE64 }}
           MACOS_CERTIFICATE_PASSWORD: ${{ secrets.MACOS_CERTIFICATE_PASSWORD }}
@@ -115,7 +130,6 @@ jobs:
           security find-identity -v -p codesigning "$keychain_path" | grep -F "$MACOS_SIGNING_IDENTITY"
 
       - name: Prepare App Store Connect notarization key
-        if: ${{ env.MACOS_SIGNING_ENABLED == 'true' }}
         env:
           APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
           APPLE_API_ISSUER_ID: ${{ secrets.APPLE_API_ISSUER_ID }}
@@ -129,34 +143,60 @@ jobs:
           private_key_path="$RUNNER_TEMP/AuthKey_${APPLE_API_KEY_ID}.p8"
           printf '%s' "$APPLE_API_PRIVATE_KEY_BASE64" | base64 -D > "$private_key_path"
           chmod 600 "$private_key_path"
-          echo "APPLE_API_KEY_ID=$APPLE_API_KEY_ID" >> "$GITHUB_ENV"
-          echo "APPLE_API_ISSUER_ID=$APPLE_API_ISSUER_ID" >> "$GITHUB_ENV"
-          echo "APPLE_API_PRIVATE_KEY_PATH=$private_key_path" >> "$GITHUB_ENV"
+          {
+            echo "APPLE_API_KEY_ID=$APPLE_API_KEY_ID"
+            echo "APPLE_API_ISSUER_ID=$APPLE_API_ISSUER_ID"
+            echo "APPLE_API_PRIVATE_KEY_PATH=$private_key_path"
+          } >> "$GITHUB_ENV"
 
       - name: Sign, notarize, and staple app
-        if: ${{ env.MACOS_SIGNING_ENABLED == 'true' }}
         run: |
           set -euo pipefail
           scripts/sign-and-notarize.sh \
             .build/Release/SparkBar.app \
             "dist/SparkBar-${SPARKBAR_VERSION}-macOS.zip"
 
-      - name: Sign app ad hoc
-        if: ${{ env.MACOS_SIGNING_ENABLED != 'true' }}
+      - name: Prepare pinned Sparkle publishing tools
         run: |
           set -euo pipefail
-          app=".build/Release/SparkBar.app"
-          archive="dist/SparkBar-${SPARKBAR_VERSION}-macOS.zip"
-          mkdir -p dist
-          codesign --force --sign - "$app"
-          codesign --verify --deep --strict "$app"
-          ditto -c -k --sequesterRsrc --keepParent "$app" "$archive"
+          distribution="$RUNNER_TEMP/Sparkle-2.10.0.tar.xz"
+          curl --fail --location --silent --show-error \
+            https://github.com/sparkle-project/Sparkle/releases/download/2.10.0/Sparkle-2.10.0.tar.xz \
+            --output "$distribution"
+          echo "c2bf58aa8387266ac179357b1415d6f2635f044da8be41042af32425dae6da0c  $distribution" | shasum -a 256 --check
+          mkdir -p "$RUNNER_TEMP/sparkle-tools"
+          tar -xJf "$distribution" -C "$RUNNER_TEMP/sparkle-tools"
+          echo "SPARKLE_BIN=$RUNNER_TEMP/sparkle-tools/bin" >> "$GITHUB_ENV"
+
+      - name: Sign update archive and generate appcast
+        env:
+          SPARKLE_EDDSA_PRIVATE_KEY: ${{ secrets.SPARKLE_EDDSA_PRIVATE_KEY }}
+        run: |
+          set -euo pipefail
+          key_path="$RUNNER_TEMP/sparkbar-eddsa.key"
+          printf '%s' "$SPARKLE_EDDSA_PRIVATE_KEY" > "$key_path"
+          chmod 600 "$key_path"
+          archive="SparkBar-${SPARKBAR_VERSION}-macOS.zip"
+          staging="$RUNNER_TEMP/sparkbar-appcast"
+          mkdir -p "$staging"
+          cp "dist/$archive" "$staging/$archive"
+          "$SPARKLE_BIN/generate_appcast" \
+            --ed-key-file "$key_path" \
+            --download-url-prefix "https://github.com/${GITHUB_REPOSITORY}/releases/download/v${SPARKBAR_VERSION}/" \
+            --maximum-deltas 0 \
+            --maximum-versions 1 \
+            "$staging"
+          cp "$staging/appcast.xml" dist/appcast.xml
+          xmllint --noout dist/appcast.xml
+          grep -q 'sparkle:edSignature=' dist/appcast.xml
+          python3 -c 'import os; os.unlink(os.environ["RUNNER_TEMP"] + "/sparkbar-eddsa.key")'
 
       - name: Validate release metadata
         run: |
           set -euo pipefail
           app=".build/Release/SparkBar.app"
           archive="dist/SparkBar-${SPARKBAR_VERSION}-macOS.zip"
+          dmg="dist/SparkBar-${SPARKBAR_VERSION}-macOS.dmg"
           # Confirms the packaging step wrote the version we resolved, and that
           # the archive exists. The tag-to-Info.plist check in "Resolve version"
           # is what anchors the version to the repository.
@@ -165,20 +205,19 @@ jobs:
           test "$bundle_version" = "$SPARKBAR_VERSION"
           test "$bundle_build" = "$SPARKBAR_BUILD"
           test -f "$archive"
-          shasum -a 256 "$archive" > dist/SHA256SUMS
-
-          if [ "$MACOS_SIGNING_ENABLED" = "true" ]; then
-            release_mode="Developer ID signed and notarized"
-          else
-            release_mode="ad-hoc signed (not notarized)"
-          fi
+          test -f "$dmg"
+          test -f dist/appcast.xml
+          codesign --verify --deep --strict "$app"
+          xcrun stapler validate "$app"
+          xcrun stapler validate "$dmg"
+          shasum -a 256 "$archive" "$dmg" dist/appcast.xml > dist/SHA256SUMS
 
           cat > dist/RELEASE_NOTES.md <<EOF
           ## SparkBar ${SPARKBAR_VERSION}
 
           Automated macOS build for commit ${GITHUB_SHA}.
 
-          Distribution mode: ${release_mode}.
+          Distribution mode: Developer ID signed and Apple notarized.
           Verify the download with the accompanying SHA-256 checksum.
           EOF
 
@@ -190,6 +229,7 @@ jobs:
           if-no-files-found: error
 
       - name: Publish GitHub release
+        if: ${{ startsWith(github.ref, 'refs/tags/v') }}
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -208,10 +248,12 @@ jobs:
             --notes-file dist/RELEASE_NOTES.md \
             --latest \
             "dist/SparkBar-${SPARKBAR_VERSION}-macOS.zip" \
+            "dist/SparkBar-${SPARKBAR_VERSION}-macOS.dmg" \
+            dist/appcast.xml \
             dist/SHA256SUMS
 
       - name: Clean up signing credentials
-        if: ${{ always() && env.MACOS_SIGNING_ENABLED == 'true' }}
+        if: ${{ always() }}
         run: |
           set +e
           if [ -n "${SPARKBAR_SIGNING_KEYCHAIN:-}" ]; then

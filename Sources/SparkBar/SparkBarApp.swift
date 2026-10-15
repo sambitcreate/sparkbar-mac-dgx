@@ -23,6 +23,7 @@ final class AppCoordinator {
     private var statusItemController: StatusItemController?
     private var settingsWindowController: NSWindowController?
     private let sleepWakeMonitor = SleepWakeMonitor()
+    private let updateService = UpdateService()
     private var didStart = false
     // Retained for the process lifetime; the coordinator never deinitializes.
     private var terminationObserver: NSObjectProtocol?
@@ -40,7 +41,8 @@ final class AppCoordinator {
             return
         }
 
-        statusItemController = StatusItemController(model: model, openSettings: { [weak self] in
+        updateService.start()
+        statusItemController = StatusItemController(model: model, updateService: updateService, openSettings: { [weak self] in
             self?.openSettings()
         })
         sleepWakeMonitor.start(

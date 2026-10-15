@@ -12,6 +12,9 @@ let package = Package(
         .executable(name: "SparkBar", targets: ["SparkBar"]),
         .executable(name: "SparkBarSmoke", targets: ["SparkBarSmoke"])
     ],
+    dependencies: [
+        .package(url: "https://github.com/sparkle-project/Sparkle", exact: "2.10.0")
+    ],
     targets: [
         .target(
             name: "SparkBarCore",
@@ -19,8 +22,11 @@ let package = Package(
         ),
         .executableTarget(
             name: "SparkBar",
-            dependencies: ["SparkBarCore"],
-            path: "Sources/SparkBar"
+            dependencies: ["SparkBarCore", .product(name: "Sparkle", package: "Sparkle")],
+            path: "Sources/SparkBar",
+            linkerSettings: [
+                .unsafeFlags(["-Xlinker", "-rpath", "-Xlinker", "@executable_path/../Frameworks"])
+            ]
         ),
         .executableTarget(
             name: "SparkBarSmoke",
@@ -32,6 +38,11 @@ let package = Package(
             dependencies: ["SparkBarCore"],
             path: "Tests/SparkBarCoreTests",
             resources: [.process("Fixtures")]
+        ),
+        .testTarget(
+            name: "SparkBarAppTests",
+            dependencies: ["SparkBar", "SparkBarCore"],
+            path: "Tests/SparkBarAppTests"
         )
     ]
 )

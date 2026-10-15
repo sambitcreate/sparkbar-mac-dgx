@@ -6,6 +6,7 @@ import SwiftUI
 @MainActor
 final class StatusItemController: NSObject {
     private let model: AppModel
+    private let updateService: UpdateService
     private let openSettings: () -> Void
     private let statusItem: NSStatusItem
     private let popover: NSPopover
@@ -40,8 +41,9 @@ final class StatusItemController: NSObject {
         }
     }
 
-    init(model: AppModel, openSettings: @escaping () -> Void) {
+    init(model: AppModel, updateService: UpdateService, openSettings: @escaping () -> Void) {
         self.model = model
+        self.updateService = updateService
         self.openSettings = openSettings
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         popover = NSPopover()
@@ -78,6 +80,11 @@ final class StatusItemController: NSObject {
         let settingsItem = NSMenuItem(title: "Settings…", action: #selector(openSettingsFromMenu), keyEquivalent: ",")
         settingsItem.target = self
         menu.addItem(settingsItem)
+        if Bundle.main.object(forInfoDictionaryKey: "SparkBarUpdatesEnabled") as? Bool == true {
+            let updatesItem = NSMenuItem(title: "Check for Updates…", action: #selector(checkForUpdatesFromMenu), keyEquivalent: "")
+            updatesItem.target = self
+            menu.addItem(updatesItem)
+        }
         menu.addItem(.separator())
         let quitItem = NSMenuItem(title: "Quit SparkBar", action: #selector(quitFromMenu), keyEquivalent: "q")
         quitItem.target = self
@@ -96,6 +103,9 @@ final class StatusItemController: NSObject {
 
     private func showContextMenu() {
         guard let button = statusItem.button else { return }
+        if let updatesItem = contextMenu.items.first(where: { $0.action == #selector(checkForUpdatesFromMenu) }) {
+            updatesItem.isEnabled = updateService.canCheckForUpdates
+        }
         contextMenu.popUp(positioning: nil, at: NSPoint(x: 0, y: button.bounds.height), in: button)
     }
 
@@ -105,6 +115,10 @@ final class StatusItemController: NSObject {
 
     @objc private func openSettingsFromMenu() {
         openSettings()
+    }
+
+    @objc private func checkForUpdatesFromMenu() {
+        updateService.checkForUpdates()
     }
 
     @objc private func quitFromMenu() {
