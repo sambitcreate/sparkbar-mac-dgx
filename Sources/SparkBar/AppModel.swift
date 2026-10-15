@@ -4,6 +4,11 @@ import OSLog
 import SparkBarCore
 import SwiftUI
 
+enum ConnectionSetupMode: String, CaseIterable {
+    case scan
+    case manual
+}
+
 @MainActor
 @Observable
 final class AppModel {
@@ -24,6 +29,11 @@ final class AppModel {
     private(set) var focusedSparkID: String?
     private(set) var history = HistoryStore(maxSamples: 900)
 
+    var connectionSetupMode: ConnectionSetupMode = .scan
+    private(set) var discoveryPhase: SparkDashDiscoveryPhase = .idle
+    private(set) var discoveryHits: [SparkDashDiscoveryHit] = []
+    private(set) var discoveryError: String?
+
     var selectedSparkID: String? {
         didSet {
             settings.selectedSparkID = selectedSparkID
@@ -36,6 +46,10 @@ final class AppModel {
     private var eventTask: Task<Void, Never>?
     private var pollTask: Task<Void, Never>?
     private var historyTask: Task<Void, Never>?
+    private var scanTask: Task<Void, Never>?
+    /// Incremented on start/stop so a cancelled scan cannot clobber a newer one.
+    private var scanSession = 0
+    private let scanner = SparkDashScanner()
     private var alertEngine: AlertEngine
     /// Retains Sparks that a single snapshot omitted, so one failed metrics
     /// request cannot remove a machine from the dashboard.
@@ -59,6 +73,41 @@ final class AppModel {
             thresholds: settings.alertThresholds,
             cooldown: settings.alertCooldownMinutes * 60
         )
+        migrateUnusedLocalhostEndpoint()
+    }
+
+    private static let unusedLocalhostEndpoints: Set<String> = [
+        "http://localhost:5555",
+        "http://127.0.0.1:5555",
+    ]
+
+    private func migrateUnusedLocalhostEndpoint() {
+        guard settings.lastSuccessfulEndpoint?.isEmpty ?? true,
+              Self.isUnusedLocalhost(settings.endpoint) else { return }
+        settings.endpoint = ""
+        settings.persist()
+    }
+
+    private static func isUnusedLocalhost(_ rawValue: String) -> Bool {
+        unusedLocalhostEndpoints.contains(rawValue.trimmingCharacters(in: .whitespacesAndNewlines).lowercased())
+    }
+
+    private var usableEndpointString: String? {
+        if let last = settings.lastSuccessfulEndpoint?.trimmingCharacters(in: .whitespacesAndNewlines),
+           !last.isEmpty {
+            return last
+        }
+        let draft = settings.endpoint.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !draft.isEmpty else { return nil }
+        if Self.isUnusedLocalhost(draft) { return nil }
+        return draft
+    }
+
+    private func recordSuccessfulEndpoint() {
+        guard let endpoint = currentEndpoint?.displayString,
+              !Self.isUnusedLocalhost(endpoint) else { return }
+        settings.lastSuccessfulEndpoint = endpoint
+        settings.persist()
     }
 
     var isConnected: Bool { connectionState.isLive }
@@ -98,16 +147,17 @@ final class AppModel {
     func start() {
         guard !isStopping else { return }
         logger.info("Starting SparkBar")
-        guard let endpoint = try? SparkDashEndpoint(settings.endpoint), !settings.endpoint.isEmpty else {
-            logger.info("No endpoint configured yet; waiting for input from the connection view")
-            return
-        }
-        connect(to: endpoint)
         do {
             try launchAtLoginService.apply(desired: settings.launchAtLogin)
         } catch {
             lastError = "Launch at login could not be configured: \(error.localizedDescription)"
         }
+        guard let raw = usableEndpointString,
+              let endpoint = try? SparkDashEndpoint(raw) else {
+            logger.info("No endpoint configured yet; waiting for input from the connection view")
+            return
+        }
+        connect(to: endpoint)
     }
 
     func stop() {
@@ -198,9 +248,11 @@ final class AppModel {
         case .connectionTested(let result):
             configuredSparks = result.sparks
             serverSettings = result.settings
+            recordSuccessfulEndpoint()
             logger.info("REST connection succeeded with \(result.sparkCount) Spark(s)")
         case .snapshot(let envelope):
             connectionState = .connected
+            recordSuccessfulEndpoint()
             logger.info("Received snapshot with \(envelope.sparks.count) Spark(s)")
             applySnapshot(envelope)
         case .diagnostic(let message):
@@ -267,21 +319,94 @@ final class AppModel {
     }
 
     func wake() {
+        guard let raw = usableEndpointString,
+              let endpoint = try? SparkDashEndpoint(raw) else {
+            return
+        }
+        connect(to: endpoint)
+    }
+
+    func startNetworkScan() {
+        scanSession += 1
+        let session = scanSession
+        scanTask?.cancel()
+        scanTask = nil
+        discoveryPhase = .scanning
+        discoveryHits = []
+        discoveryError = nil
+        logger.info("Starting sparkDash scan lan=\(self.settings.scanLAN) bonjour=\(self.settings.scanBonjour) tailscale=\(self.settings.scanTailscaleLocalAPI)")
+        let options = SparkDashScanOptions(
+            probeLAN: settings.scanLAN,
+            bonjour: settings.scanBonjour,
+            tailscaleLocalAPI: settings.scanTailscaleLocalAPI
+        )
+        scanTask = Task { [scanner, options] in
+            await scanner.cancel()
+            guard session == scanSession else { return }
+            let result = await scanner.scan(options)
+            await MainActor.run {
+                guard session == scanSession else { return }
+                switch result {
+                case .success(let hits):
+                    discoveryPhase = .completed
+                    discoveryHits = hits
+                case .failure(let error):
+                    if error as? SparkDashDiscoveryError == .cancelled {
+                        discoveryPhase = .idle
+                    } else {
+                        discoveryPhase = .failed
+                        discoveryError = error.localizedDescription
+                    }
+                }
+                scanTask = nil
+            }
+        }
+    }
+
+    func stopNetworkScan() {
+        scanSession += 1
+        scanTask?.cancel()
+        scanTask = nil
+        if discoveryPhase == .scanning {
+            discoveryPhase = .idle
+        }
+        Task { await scanner.cancel() }
+    }
+
+    func connectToDiscoveryHit(_ hit: SparkDashDiscoveryHit) {
+        stopNetworkScan()
+        settings.endpoint = hit.displayURL
         connectFromSettings()
     }
 
+    func fillEndpointFromLastSuccessIfEmpty() {
+        let draft = settings.endpoint.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard draft.isEmpty,
+              let last = settings.lastSuccessfulEndpoint?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !last.isEmpty else {
+            return
+        }
+        settings.endpoint = last
+    }
+
+    func openConnectionScan() {
+        connectionSetupMode = .scan
+        startNetworkScan()
+    }
+
     func openSparkDash() {
-        guard let endpoint = try? SparkDashEndpoint(settings.endpoint) else { return }
+        guard let raw = usableEndpointString ?? settings.endpoint.nilIfEmpty,
+              let endpoint = try? SparkDashEndpoint(raw) else { return }
         NSWorkspace.shared.open(endpoint.apiBaseURL)
     }
 
     func openSparkDashRepository() {
-        guard let url = URL(string: "https://github.com/MiaAI-Lab/sparkDash") else { return }
+        guard let url = ProjectLinks.sparkDashRepository else { return }
         NSWorkspace.shared.open(url)
     }
 
     func openSparkBarRepository() {
-        guard let url = URL(string: "https://github.com/sambitcreate/sparkbar-mac-dgx") else { return }
+        guard let url = ProjectLinks.sparkBarRepository else { return }
         NSWorkspace.shared.open(url)
     }
 
@@ -390,6 +515,13 @@ final class AppModel {
     }
 }
 
+private extension String {
+    var nilIfEmpty: String? {
+        let trimmed = trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? nil : trimmed
+    }
+}
+
 @MainActor
 @Observable
 final class SettingsStore {
@@ -397,6 +529,7 @@ final class SettingsStore {
     private let key = "com.sparkbar.settings.v1"
 
     var endpoint: String
+    var lastSuccessfulEndpoint: String?
     var displayMetric: DisplayMetric
     var sourceMode: SparkSourceMode
     var selectedSparkID: String?
@@ -407,11 +540,15 @@ final class SettingsStore {
     var temperatureThreshold: Double
     var memoryThreshold: Double
     var alertCooldownMinutes: Double
+    var scanLAN: Bool
+    var scanBonjour: Bool
+    var scanTailscaleLocalAPI: Bool
 
     init(defaults: UserDefaults = .standard) {
         self.defaults = defaults
         let saved = defaults.data(forKey: key).flatMap { try? JSONDecoder().decode(PersistedSettings.self, from: $0) }
         endpoint = saved?.endpoint ?? ""
+        lastSuccessfulEndpoint = saved?.lastSuccessfulEndpoint
         displayMetric = saved?.displayMetric ?? .gpuUtilization
         sourceMode = saved?.sourceMode ?? .auto
         selectedSparkID = saved?.selectedSparkID
@@ -422,6 +559,9 @@ final class SettingsStore {
         temperatureThreshold = saved?.temperatureThreshold ?? 85
         memoryThreshold = saved?.memoryThreshold ?? 85
         alertCooldownMinutes = saved?.alertCooldownMinutes ?? 15
+        scanLAN = saved?.scanLAN ?? true
+        scanBonjour = saved?.scanBonjour ?? false
+        scanTailscaleLocalAPI = saved?.scanTailscaleLocalAPI ?? false
     }
 
     var alertThresholds: AlertThresholds {
@@ -431,6 +571,7 @@ final class SettingsStore {
     func persist() {
         let value = PersistedSettings(
             endpoint: endpoint,
+            lastSuccessfulEndpoint: lastSuccessfulEndpoint,
             displayMetric: displayMetric,
             sourceMode: sourceMode,
             selectedSparkID: selectedSparkID,
@@ -440,7 +581,10 @@ final class SettingsStore {
             showNotifications: showNotifications,
             temperatureThreshold: temperatureThreshold,
             memoryThreshold: memoryThreshold,
-            alertCooldownMinutes: alertCooldownMinutes
+            alertCooldownMinutes: alertCooldownMinutes,
+            scanLAN: scanLAN,
+            scanBonjour: scanBonjour,
+            scanTailscaleLocalAPI: scanTailscaleLocalAPI
         )
         guard let data = try? JSONEncoder().encode(value) else { return }
         defaults.set(data, forKey: key)
@@ -448,6 +592,7 @@ final class SettingsStore {
 
     private struct PersistedSettings: Codable {
         let endpoint: String
+        let lastSuccessfulEndpoint: String?
         let displayMetric: DisplayMetric
         let sourceMode: SparkSourceMode
         let selectedSparkID: String?
@@ -458,5 +603,8 @@ final class SettingsStore {
         let temperatureThreshold: Double
         let memoryThreshold: Double
         let alertCooldownMinutes: Double
+        var scanLAN: Bool?
+        var scanBonjour: Bool?
+        var scanTailscaleLocalAPI: Bool?
     }
 }

@@ -1,6 +1,6 @@
 # SparkBar
 
-A native macOS menu-bar companion for [sparkDash](https://github.com/MiaAI-Lab/sparkDash) that keeps your DGX Spark metrics one glance away.
+A native macOS menu-bar companion for sparkDash that keeps DGX Spark and GPU-host metrics one glance away.
 
 <p align="center">
   <img src="assets/sparkbar-hero.webp" alt="SparkBar popover showing DGX1 GPU, unified memory, and LLM monitoring" width="480" />
@@ -22,12 +22,12 @@ SparkBar lives in your menu bar and streams live DGX Spark snapshots over WebSoc
 
 - macOS 14 Sonoma or newer
 - Xcode 26.6 / Swift 6.3, or a compatible Swift 6 toolchain
-- A reachable [sparkDash](https://github.com/MiaAI-Lab/sparkDash) endpoint
+- A reachable sparkDash-compatible endpoint
 
 ### Build from source
 
 ```sh
-git clone https://github.com/sambitcreate/sparkbar-mac-dgx.git
+git clone <this-repository>
 cd sparkbar-mac-dgx
 swift build
 ./scripts/build-app.sh
@@ -46,17 +46,25 @@ All networking, decoding, selection, formatting, history, and alert logic lives 
 
 ## Connect to sparkDash
 
-SparkBar depends on a running [sparkDash](https://github.com/MiaAI-Lab/sparkDash) instance, which performs the DGX Spark collection and exposes the REST/WebSocket API that SparkBar monitors. On first launch SparkBar has no endpoint configured; click the menu bar icon and enter your sparkDash URL in the connection view. The recommended deployment is Docker:
+SparkBar depends on a running sparkDash (or compatible) instance, which collects DGX Spark / GPU-host metrics and exposes the REST/WebSocket API that SparkBar monitors. On first launch SparkBar has no endpoint configured; click the menu bar icon and enter your sparkDash URL in the connection view. The usual deployment is Docker from a sparkDash checkout:
 
 ```sh
-git clone https://github.com/MiaAI-Lab/sparkDash.git
 cd sparkDash
 docker compose up --build -d
 ```
 
-Then point SparkBar at your sparkDash address: `http://localhost:5555` when sparkDash runs on the same Mac, or `http://<host-ip>:5555` over LAN or Tailscale. From sparkDash 1.8.2 the server binds to `127.0.0.1` by default; a menu-bar client on another Mac needs `BIND_HOST=0.0.0.0` (or Docker Compose, which already binds `0.0.0.0`). For a development checkout of sparkDash, use `npm install` followed by `npm run dev`. See the [sparkDash quick start](https://github.com/MiaAI-Lab/sparkDash#quick-start) for the complete setup.
+Then point SparkBar at that server: `http://localhost:5555` when it runs on the same Mac, or `http://<host-ip>:5555` over LAN or Tailscale. From sparkDash 1.8.2 the server binds to `127.0.0.1` by default; a menu-bar client on another Mac needs `BIND_HOST=0.0.0.0` (or Docker Compose, which already binds `0.0.0.0`). For a development checkout, use `npm install` followed by `npm run dev`. See your sparkDash documentation for DGX and GPU-host setup.
 
 SparkBar accepts any `http://`, `https://`, `ws://`, or `wss://` base URL; HTTP maps to WS and HTTPS maps to WSS automatically.
+
+### Scan, Bonjour, and Tailscale
+
+Click the menu bar **Scan** title to open the popover, then tap **Scan**. LAN probing covers RFC1918 `/24` networks only — it does not sweep Tailscale CGNAT.
+
+In Settings → Connection you can optionally enable:
+
+- **Bonjour** — browse `_sparkdash._tcp`. sparkDash does not advertise this unless you set `SPARKDASH_BONJOUR=1` on the server (`dns-sd` on macOS, `avahi-publish-service` on Linux).
+- **Tailscale LocalAPI** — read the local Tailscale app’s peer list and probe those IPs on port 5555. SparkBar still confirms with `GET /api/sparks`. The Tailscale app must be running on this Mac.
 
 ### A note on HTTP
 

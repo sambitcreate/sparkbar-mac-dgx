@@ -99,7 +99,16 @@ private struct SparkOverviewRow: View {
                 HStack {
                     Text(snapshot.name)
                         .font(.headline)
-                    if snapshot.isGPUHost {
+                    if let hint = GB10Identity.match(
+                        kind: snapshot.kind,
+                        name: snapshot.name,
+                        id: snapshot.id,
+                        hardware: snapshot.hardware
+                    )?.vendorHint {
+                        Text(hint)
+                            .font(.caption.weight(.medium))
+                            .foregroundStyle(.secondary)
+                    } else if snapshot.isGPUHost {
                         Text("Host")
                             .font(.caption.weight(.medium))
                             .foregroundStyle(.secondary)

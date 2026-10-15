@@ -20,10 +20,17 @@
 	<string>1</string>
 	<key>LSMinimumSystemVersion</key>
 	<string>14.0</string>
+	<!-- Optional: SparkBarRepositoryURL and SparkDashRepositoryURL (https). When set, Settings → About and the first-run card can open them. Forks should point these at their own docs. -->
 	<key>LSUIElement</key>
 	<true/>
 	<key>NSHighResolutionCapable</key>
 	<true/>
+	<key>NSLocalNetworkUsageDescription</key>
+	<string>SparkBar looks for sparkDash on your local network so you can connect without typing an IP.</string>
+	<key>NSBonjourServices</key>
+	<array>
+		<string>_sparkdash._tcp</string>
+	</array>
 	<key>NSAppTransportSecurity</key>
 	<dict>
 		<!-- SparkBar talks to a user-supplied sparkDash URL, which is normally a

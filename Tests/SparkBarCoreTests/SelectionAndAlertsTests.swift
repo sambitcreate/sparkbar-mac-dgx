@@ -31,7 +31,19 @@ struct SelectionAndAlertsTests {
             snapshots: [], connectionState: .disconnected, metric: .gpuUtilization, sourceMode: .auto, selectedID: nil
         )
         #expect(disconnected.severity == .disconnected)
-        #expect(disconnected.title == "—")
+        #expect(disconnected.title == "Scan")
+        #expect(disconnected.accessibilityLabel == "Scan for sparkDash. SparkBar is not connected.")
+
+        let failed = MenuBarPresenter.make(
+            snapshots: [], connectionState: .failed("offline"), metric: .gpuUtilization, sourceMode: .auto, selectedID: nil
+        )
+        #expect(failed.title == "Scan")
+        #expect(failed.severity == .disconnected)
+
+        let connecting = MenuBarPresenter.make(
+            snapshots: [], connectionState: .connecting, metric: .gpuUtilization, sourceMode: .auto, selectedID: nil
+        )
+        #expect(connecting.title == "—")
 
         let offline = MenuBarPresenter.make(
             snapshots: [makeSnapshot(id: "offline", name: "Offline", online: false, gpu: 100)],

@@ -283,12 +283,22 @@ public enum MenuBarPresenter {
                 default: return false
                 }
             }()
+            if isConnecting {
+                return MenuBarPresentation(
+                    title: "—",
+                    accessibilityLabel: "sparkDash \(connectionState.shortLabel.lowercased())",
+                    isDimmed: true,
+                    isPulsing: true,
+                    severity: .connecting,
+                    sourceSparkID: nil
+                )
+            }
             return MenuBarPresentation(
-                title: "—",
-                accessibilityLabel: "sparkDash \(connectionState.shortLabel.lowercased())",
+                title: "Scan",
+                accessibilityLabel: "Scan for sparkDash. SparkBar is not connected.",
                 isDimmed: true,
-                isPulsing: connectionState == .connecting,
-                severity: isConnecting ? .connecting : .disconnected,
+                isPulsing: false,
+                severity: .disconnected,
                 sourceSparkID: nil
             )
         }

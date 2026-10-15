@@ -208,6 +208,7 @@ private struct SectionButton: View {
 
 private struct ConnectionView: View {
     @Bindable var model: AppModel
+    private static let endpointPlaceholder = "http://<sparkDash-host>:5555"
 
     var body: some View {
         ScrollView {
@@ -221,7 +222,7 @@ private struct ConnectionView: View {
                 VStack(alignment: .leading, spacing: 5) {
                     Text("Connect to sparkDash")
                         .font(.title3.weight(.semibold))
-                    Text(model.lastError ?? "Enter the dashboard URL to monitor your Sparks.")
+                    Text(model.lastError ?? "Find sparkDash on your network or enter its URL manually.")
                         .font(.callout)
                         .foregroundStyle(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
@@ -235,34 +236,21 @@ private struct ConnectionView: View {
                     }
                 }
 
-                TextField("http://localhost:5555", text: Binding(
-                    get: { model.settings.endpoint },
-                    set: { model.settings.endpoint = $0 }
-                ))
-                .textFieldStyle(.roundedBorder)
-                .onSubmit { model.connectFromSettings() }
-                .accessibilityLabel("sparkDash dashboard URL")
-
-                if let endpoint = try? SparkDashEndpoint(model.settings.endpoint),
-                   endpoint.shouldWarnAboutInsecureRemote {
-                    Label("This remote endpoint uses unencrypted HTTP. Prefer HTTPS/WSS or a trusted private network.", systemImage: "lock.open")
-                        .font(.caption)
-                        .foregroundStyle(.orange)
+                Picker("Connection mode", selection: Binding(
+                    get: { model.connectionSetupMode },
+                    set: { model.connectionSetupMode = $0 }
+                )) {
+                    Text("Scan").tag(ConnectionSetupMode.scan)
+                    Text("Manual").tag(ConnectionSetupMode.manual)
                 }
+                .pickerStyle(.segmented)
+                .labelsHidden()
+                .accessibilityLabel("Connection mode")
 
-                Button {
-                    model.connectFromSettings()
-                } label: {
-                    Label(model.connectionState == .connecting ? "Connecting…" : "Connect", systemImage: "arrow.right.circle.fill")
-                        .frame(maxWidth: .infinity)
-                }
-                .buttonStyle(.borderedProminent)
-                .disabled(model.connectionState == .connecting)
-
-                if case .apiReachableLiveStreamUnavailable = model.connectionState {
-                    Label("sparkDash found, but the live stream is unavailable.", systemImage: "exclamationmark.triangle")
-                        .font(.caption)
-                        .foregroundStyle(.orange)
+                if model.connectionSetupMode == .scan {
+                    scanSection
+                } else {
+                    manualSection
                 }
 
                 SparkDashSetupCard(model: model)
@@ -270,6 +258,70 @@ private struct ConnectionView: View {
             .padding(24)
         }
         .scrollIndicators(.automatic)
+    }
+
+    private var scanSection: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("sparkDash runs on your DGX over the LAN or Tailscale, not on this Mac.")
+                .font(.callout)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+
+            HStack {
+                if model.discoveryPhase == .scanning {
+                    Button("Stop") { model.stopNetworkScan() }
+                        .buttonStyle(.bordered)
+                } else {
+                    Button {
+                        model.startNetworkScan()
+                    } label: {
+                        Label("Scan", systemImage: "dot.radiowaves.left.and.right")
+                    }
+                    .buttonStyle(.borderedProminent)
+                }
+            }
+
+            DiscoveryScanPanel(model: model, showsStartStop: false)
+
+            Text("LAN scan may miss sparkDash hosts reachable only over Tailscale. Enable Tailscale peers in Settings to probe known peers, or Bonjour if sparkDash advertises _sparkdash._tcp.")
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+    }
+
+    private var manualSection: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            TextField(Self.endpointPlaceholder, text: Binding(
+                get: { model.settings.endpoint },
+                set: { model.settings.endpoint = $0 }
+            ))
+            .textFieldStyle(.roundedBorder)
+            .onSubmit { model.connectFromSettings() }
+            .accessibilityLabel("sparkDash dashboard URL")
+
+            if let endpoint = try? SparkDashEndpoint(model.settings.endpoint),
+               endpoint.shouldWarnAboutInsecureRemote {
+                Label("This remote endpoint uses unencrypted HTTP. Prefer HTTPS/WSS or a trusted private network.", systemImage: "lock.open")
+                    .font(.caption)
+                    .foregroundStyle(.orange)
+            }
+
+            Button {
+                model.connectFromSettings()
+            } label: {
+                Label(model.connectionState == .connecting ? "Connecting…" : "Connect", systemImage: "arrow.right.circle.fill")
+                    .frame(maxWidth: .infinity)
+            }
+            .buttonStyle(.borderedProminent)
+            .disabled(model.connectionState == .connecting)
+
+            if case .apiReachableLiveStreamUnavailable = model.connectionState {
+                Label("sparkDash found, but the live stream is unavailable.", systemImage: "exclamationmark.triangle")
+                    .font(.caption)
+                    .foregroundStyle(.orange)
+            }
+        }
     }
 
     private var isFailure: Bool {
@@ -293,24 +345,26 @@ private struct SparkDashSetupCard: View {
             Text("If sparkDash is not already running:")
                 .font(.caption.weight(.semibold))
 
-            Text("git clone https://github.com/MiaAI-Lab/sparkDash.git\ncd sparkDash\ndocker compose up --build -d")
+            Text("cd sparkDash\ndocker compose up --build -d")
                 .font(.system(.caption2, design: .monospaced))
                 .textSelection(.enabled)
                 .padding(10)
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .background(.black.opacity(0.18), in: RoundedRectangle(cornerRadius: 8))
 
-            Text("Then connect to http://<sparkDash-host>:5555. sparkDash 1.8.2+ binds to 127.0.0.1 by default, so a remote Mac needs BIND_HOST=0.0.0.0 or Docker Compose. For development, use npm install followed by npm run dev instead.")
+            Text("Then connect using the DGX address on your LAN or Tailscale (for example http://<sparkDash-host>:5555). sparkDash binds to 127.0.0.1 by default, so a remote Mac needs BIND_HOST=0.0.0.0 or Docker Compose. Optional Bonjour: SPARKDASH_BONJOUR=1 advertises _sparkdash._tcp for Scan.")
                 .font(.caption2)
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
 
-            Button {
-                model.openSparkDashRepository()
-            } label: {
-                Label("Open sparkDash install guide", systemImage: "arrow.up.right.square")
+            if ProjectLinks.sparkDashRepository != nil {
+                Button {
+                    model.openSparkDashRepository()
+                } label: {
+                    Label("Open sparkDash documentation", systemImage: "arrow.up.right.square")
+                }
+                .buttonStyle(.link)
             }
-            .buttonStyle(.link)
         }
         .padding(12)
         .background(.quaternary, in: RoundedRectangle(cornerRadius: 12))

@@ -11,23 +11,57 @@ struct SettingsView: View {
     var body: some View {
         TabView {
             Form {
-                Section("Connection") {
-                    TextField("http://localhost:5555", text: Binding(
-                        get: { model.settings.endpoint },
-                        set: { model.settings.endpoint = $0 }
-                    ))
-                    HStack {
-                        Circle()
-                            .fill(model.connectionState.isLive ? .green : .secondary)
-                            .frame(width: 8, height: 8)
-                        Text(model.connectionState.shortLabel)
-                            .foregroundStyle(.secondary)
-                        Spacer()
-                        Button("Test & Connect") { model.connectFromSettings() }
+                Section {
+                    VStack(alignment: .leading, spacing: 8) {
+                        Text("sparkDash URL")
+                            .font(.headline)
+                        TextField(
+                            "sparkDash URL",
+                            text: Binding(
+                                get: { model.settings.endpoint },
+                                set: { model.settings.endpoint = $0 }
+                            ),
+                            prompt: Text("http://<sparkDash-host>:5555")
+                        )
+                        .textFieldStyle(.roundedBorder)
+                        .labelsHidden()
+                        .onSubmit { model.connectFromSettings() }
+                        .accessibilityLabel("sparkDash URL")
+                        .onAppear { model.fillEndpointFromLastSuccessIfEmpty() }
                     }
-                    Button("Open sparkDash") { model.openSparkDash() }
+
+                    if let last = model.settings.lastSuccessfulEndpoint?.trimmingCharacters(in: .whitespacesAndNewlines),
+                       !last.isEmpty,
+                       last != model.settings.endpoint.trimmingCharacters(in: .whitespacesAndNewlines) {
+                        LabeledContent("Last connected") {
+                            Button(last) {
+                                model.settings.endpoint = last
+                                model.connectFromSettings()
+                            }
+                            .buttonStyle(.link)
+                            .help("Reuse the last URL that connected successfully")
+                        }
+                    }
+
+                    LabeledContent("Status") {
+                        HStack(spacing: 6) {
+                            Circle()
+                                .fill(model.connectionState.isLive ? .green : .secondary)
+                                .frame(width: 8, height: 8)
+                                .accessibilityHidden(true)
+                            Text(model.connectionState.shortLabel)
+                        }
+                    }
+
+                    HStack {
+                        Button("Test & Connect") { model.connectFromSettings() }
+                            .disabled(!hasTypedEndpoint)
+                        Button("Open sparkDash") { model.openSparkDash() }
+                            .disabled(!canOpenSparkDash)
+                    }
+
                     if let endpoint = try? SparkDashEndpoint(model.settings.endpoint), endpoint.shouldWarnAboutInsecureRemote {
-                        Label("This remote endpoint uses unencrypted HTTP. Prefer HTTPS/WSS or a trusted private network.", systemImage: "lock.open")
+                        Label("This remote URL is unencrypted HTTP. Prefer HTTPS or a trusted private network.", systemImage: "lock.open")
                             .font(.caption)
                             .foregroundStyle(.orange)
                     }
@@ -41,6 +75,30 @@ struct SettingsView: View {
                             .font(.caption)
                             .foregroundStyle(.secondary)
                     }
+                } header: {
+                    Text("Endpoint")
+                } footer: {
+                    Text("SparkBar reads metrics from this sparkDash URL. It does not SSH into the DGX.")
+                }
+
+                Section {
+                    DiscoveryScanPanel(model: model)
+                    Toggle("LAN", isOn: Binding(
+                        get: { model.settings.scanLAN },
+                        set: { model.settings.scanLAN = $0; model.settings.persist() }
+                    ))
+                    Toggle("Bonjour", isOn: Binding(
+                        get: { model.settings.scanBonjour },
+                        set: { model.settings.scanBonjour = $0; model.settings.persist() }
+                    ))
+                    Toggle("Tailscale peers", isOn: Binding(
+                        get: { model.settings.scanTailscaleLocalAPI },
+                        set: { model.settings.scanTailscaleLocalAPI = $0; model.settings.persist() }
+                    ))
+                } header: {
+                    Text("Find on this Mac’s network")
+                } footer: {
+                    Text("LAN covers private /24 networks only, not Tailscale CGNAT. Bonjour needs SPARKDASH_BONJOUR=1 on the server. Tailscale uses this Mac’s Tailscale app peer list, then confirms GET /api/sparks.")
                 }
             }
             .formStyle(.grouped)
@@ -158,14 +216,31 @@ struct SettingsView: View {
                 }
                 Section("About") {
                     LabeledContent("Version", value: versionString)
-                    Button("SparkBar repository") { model.openSparkBarRepository() }
-                    Button("sparkDash repository") { model.openSparkDashRepository() }
+                    if ProjectLinks.sparkBarRepository != nil {
+                        Button("SparkBar repository") { model.openSparkBarRepository() }
+                    }
+                    if ProjectLinks.sparkDashRepository != nil {
+                        Button("sparkDash project") { model.openSparkDashRepository() }
+                    }
                 }
             }
             .formStyle(.grouped)
             .tabItem { Label("General", systemImage: "gearshape") }
         }
-        .frame(minWidth: 500, minHeight: 520)
+        .frame(minWidth: 520, minHeight: 580)
         .padding()
+    }
+
+    private var hasTypedEndpoint: Bool {
+        !model.settings.endpoint.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
+    private var canOpenSparkDash: Bool {
+        if (try? SparkDashEndpoint(model.settings.endpoint)) != nil { return true }
+        if let last = model.settings.lastSuccessfulEndpoint,
+           (try? SparkDashEndpoint(last)) != nil {
+            return true
+        }
+        return false
     }
 }
