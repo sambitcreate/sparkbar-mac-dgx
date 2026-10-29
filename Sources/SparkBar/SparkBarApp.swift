@@ -58,7 +58,9 @@ final class AppCoordinator {
             object: nil,
             queue: .main
         ) { [weak self] _ in
-            Task { @MainActor [weak self] in self?.model.stop() }
+            // Termination does not wait for a newly scheduled Task. This
+            // observer runs on .main, so flush history before returning.
+            MainActor.assumeIsolated { self?.model.stop() }
         }
         model.start()
 

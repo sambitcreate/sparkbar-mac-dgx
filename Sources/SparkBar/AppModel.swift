@@ -34,6 +34,11 @@ final class AppModel {
     private var currentHistoryURL: URL?
     private var historyNeedsSave = false
     private var lastHistorySaveAt: Date?
+    private let historyPersistence = HistoryPersistence()
+    private var historyRevision = 0
+    /// A unique save identity also rejects completions from an earlier endpoint
+    /// session, including a rapid A → B → A round trip.
+    private var historySaveID: UUID?
 
     var connectionSetupMode: ConnectionSetupMode = .scan
     private(set) var discoveryPhase: SparkDashDiscoveryPhase = .idle
@@ -453,6 +458,7 @@ final class AppModel {
     func sampleHistory() {
         guard !snapshots.isEmpty else { return }
         history.sample(snapshots)
+        historyRevision += 1
         historyNeedsSave = true
         persistHistory(force: false)
     }
@@ -467,6 +473,7 @@ final class AppModel {
         let before = history.outages
         history.recordConnectivity(isConnected: isReceivingData)
         if history.outages != before {
+            historyRevision += 1
             historyNeedsSave = true
             persistHistory(force: false)
         }
@@ -474,16 +481,42 @@ final class AppModel {
 
     private func persistHistory(force: Bool) {
         guard historyNeedsSave, let url = currentHistoryURL else { return }
-        let now = Date.now
-        if !force, let lastHistorySaveAt, now.timeIntervalSince(lastHistorySaveAt) < 30 {
+        if force {
+            // Invalidate background callbacks before draining the serial queue.
+            // Endpoint changes can then immediately reload their own latest file.
+            historySaveID = nil
+            do {
+                try historyPersistence.saveAndWait(history, to: url)
+                historyNeedsSave = false
+                lastHistorySaveAt = .now
+            } catch {
+                logger.error("History could not be saved: \(error.localizedDescription, privacy: .public)")
+            }
             return
         }
-        do {
-            try history.save(to: url)
-            historyNeedsSave = false
-            lastHistorySaveAt = now
-        } catch {
-            logger.error("History could not be saved: \(error.localizedDescription, privacy: .public)")
+
+        guard historySaveID == nil else { return }
+        if let lastHistorySaveAt, Date.now.timeIntervalSince(lastHistorySaveAt) < 30 {
+            return
+        }
+        let saveID = UUID()
+        let revision = historyRevision
+        historySaveID = saveID
+        historyPersistence.save(history, to: url) { [weak self] result in
+            Task { @MainActor [weak self] in
+                guard let self, self.historySaveID == saveID else { return }
+                self.historySaveID = nil
+                switch result {
+                case .success:
+                    // A new sample may have arrived while encoding this value.
+                    if self.historyRevision == revision {
+                        self.historyNeedsSave = false
+                    }
+                    self.lastHistorySaveAt = .now
+                case .failure(let error):
+                    self.logger.error("History could not be saved: \(error.localizedDescription, privacy: .public)")
+                }
+            }
         }
     }
 
