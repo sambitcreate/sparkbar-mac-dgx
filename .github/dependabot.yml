@@ -8,3 +8,9 @@ updates:
       interval: weekly
     labels:
       - dependencies
+  - package-ecosystem: swift
+    directory: "/"
+    schedule:
+      interval: monthly
+    labels:
+      - dependencies
