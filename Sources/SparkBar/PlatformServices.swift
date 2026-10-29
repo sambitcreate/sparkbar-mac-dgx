@@ -5,19 +5,37 @@ import UserNotifications
 
 @MainActor
 final class LaunchAtLoginService {
-    /// macOS 13+ can leave a "registered" login item pending user approval;
-    /// `apply` alone never surfaces that, so the UI checks this status.
-    var status: SMAppService.Status { SMAppService.mainApp.status }
+    private let readStatus: () -> SMAppService.Status
+    private let register: () throws -> Void
+    private let unregister: () throws -> Void
+
+    init(
+        status: @escaping () -> SMAppService.Status = { SMAppService.mainApp.status },
+        register: @escaping () throws -> Void = { try SMAppService.mainApp.register() },
+        unregister: @escaping () throws -> Void = { try SMAppService.mainApp.unregister() }
+    ) {
+        readStatus = status
+        self.register = register
+        self.unregister = unregister
+    }
+
+    /// macOS can leave a registered login item pending user approval;
+    /// the settings view uses this status to offer the System Settings link.
+    var status: SMAppService.Status { readStatus() }
 
     var needsApproval: Bool { status == .requiresApproval }
 
     func apply(desired: Bool) throws {
+        let currentStatus = status
         if desired {
-            if SMAppService.mainApp.status != .enabled {
-                try SMAppService.mainApp.register()
+            // Pending approval is already registered. Keep the existing UI
+            // prompt instead of attempting to register the same item again.
+            if currentStatus == .notRegistered || currentStatus == .notFound {
+                try register()
             }
-        } else if SMAppService.mainApp.status == .enabled {
-            try SMAppService.mainApp.unregister()
+        } else if currentStatus == .enabled || currentStatus == .requiresApproval {
+            // Turning off a pending item must remove its registration too.
+            try unregister()
         }
     }
 

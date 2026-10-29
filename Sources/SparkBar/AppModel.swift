@@ -21,7 +21,11 @@ final class AppModel {
     private(set) var serverSettings: SparkDashSettings?
     private(set) var connectionState: ConnectionState = .disconnected
     private(set) var lastSnapshotAt: Date?
-    private(set) var lastError: String?
+    /// Transport recovery must not dismiss errors from a user's settings action.
+    var lastError: String? { actionError?.message ?? transportError }
+    private var transportError: String?
+    private enum ActionErrorSource { case launchAtLogin, notificationPermission, notificationDelivery }
+    private var actionError: (source: ActionErrorSource, message: String)?
     /// Transport chatter (malformed frames, reconnect reasons). Kept separate
     /// from `lastError` so routine noise never masks the user-facing message.
     private(set) var lastDiagnostic: String?
@@ -70,18 +74,23 @@ final class AppModel {
     /// Identifies the current polling loop. A cancelled loop must not clear the
     /// handle of a newer one that replaced it.
     private var pollGeneration = 0
-    let launchAtLoginService = LaunchAtLoginService()
+    let launchAtLoginService: LaunchAtLoginService
     let notificationService = NotificationService()
-    private var isStopping = false
 
     /// sparkDash skips broadcasting an unchanged snapshot, so a Spark sitting
     /// idle produces no frames. Sampling on an independent timer keeps the
     /// history continuous instead of only recording changes.
     private static let historySampleInterval: Duration = .seconds(2)
 
-    init(defaults: UserDefaults = .standard, historyDirectory: URL? = nil, systemServicesEnabled: Bool = true) {
+    init(
+        defaults: UserDefaults = .standard,
+        historyDirectory: URL? = nil,
+        systemServicesEnabled: Bool = true,
+        launchAtLoginService: LaunchAtLoginService = LaunchAtLoginService()
+    ) {
         settings = SettingsStore(defaults: defaults)
         self.systemServicesEnabled = systemServicesEnabled
+        self.launchAtLoginService = launchAtLoginService
         self.historyDirectory = historyDirectory
             ?? FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
                 .appendingPathComponent("SparkBar", isDirectory: true)
@@ -143,14 +152,14 @@ final class AppModel {
     var onlineCount: Int { snapshots.filter(\.isOnline).count }
 
     func start() {
-        guard !isStopping else { return }
         logger.info("Starting SparkBar")
         if systemServicesEnabled {
             notificationService.activate()
             do {
                 try launchAtLoginService.apply(desired: settings.launchAtLogin)
+                clearActionError(.launchAtLogin)
             } catch {
-                lastError = "Launch at login could not be configured: \(error.localizedDescription)"
+                actionError = (.launchAtLogin, "Launch at login could not be configured: \(error.localizedDescription)")
             }
         }
         guard let raw = usableEndpointString,
@@ -162,7 +171,6 @@ final class AppModel {
     }
 
     func stop() {
-        isStopping = true
         persistHistory(force: true)
         eventTask?.cancel()
         stopPollingFallback()
@@ -184,7 +192,7 @@ final class AppModel {
             connect(to: endpoint)
         } catch {
             connectionState = .failed(error.localizedDescription)
-            lastError = error.localizedDescription
+            transportError = error.localizedDescription
             logger.error("Endpoint validation failed: \(error.localizedDescription, privacy: .public)")
         }
     }
@@ -196,7 +204,6 @@ final class AppModel {
             return
         }
         pendingInsecureEndpoint = nil
-        isStopping = false
         eventTask?.cancel()
         stopPollingFallback()
         if let oldClient = client {
@@ -224,10 +231,11 @@ final class AppModel {
                 logger.error("History could not be loaded: \(error.localizedDescription, privacy: .public)")
             }
             historyNeedsSave = false
+            historySaveID = nil
             lastHistorySaveAt = nil
             fleetMerger.reset()
         }
-        lastError = nil
+        transportError = nil
         startHistorySampling()
 
         let newClient = SparkDashClient(endpoint: endpoint)
@@ -275,7 +283,7 @@ final class AppModel {
                 break
             }
             if case .failed(let message) = state {
-                lastError = message
+                transportError = message
             }
         case .connectionTested(let result):
             guard result.endpoint == currentEndpoint else { return }
@@ -291,7 +299,7 @@ final class AppModel {
             applySnapshot(envelope)
         case .diagnostic(let message):
             lastDiagnostic = message
-            logger.error("Transport diagnostic: \(message, privacy: .public)")
+            logger.info("Transport diagnostic: \(message, privacy: .public)")
         }
     }
 
@@ -314,11 +322,16 @@ final class AppModel {
     func setLaunchAtLogin(_ enabled: Bool) {
         do {
             try launchAtLoginService.apply(desired: enabled)
+            clearActionError(.launchAtLogin)
             settings.launchAtLogin = enabled
             settings.persist()
         } catch {
-            lastError = "Launch at login could not be configured: \(error.localizedDescription)"
+            actionError = (.launchAtLogin, "Launch at login could not be configured: \(error.localizedDescription)")
         }
+    }
+
+    private func clearActionError(_ source: ActionErrorSource) {
+        if actionError?.source == source { actionError = nil }
     }
 
     func setNotificationsEnabled(_ enabled: Bool) {
@@ -327,13 +340,17 @@ final class AppModel {
                 let granted = await notificationService.requestPermission()
                 settings.showNotifications = granted
                 settings.persist()
-                if !granted {
-                    lastError = "Notification permission was not granted."
+                if granted {
+                    clearActionError(.notificationPermission)
+                } else {
+                    actionError = (.notificationPermission, "Notification permission was not granted.")
                 }
             }
         } else {
             settings.showNotifications = false
             settings.persist()
+            clearActionError(.notificationPermission)
+            clearActionError(.notificationDelivery)
         }
     }
 
@@ -554,7 +571,7 @@ final class AppModel {
             snapshots = merged
         }
         lastSnapshotAt = .now
-        lastError = nil
+        transportError = nil
         // Only auto-pick when nothing is selected; never clobber the
         // user's explicit choice when a spark briefly leaves the list.
         if selectedSparkID == nil {
@@ -563,10 +580,12 @@ final class AppModel {
         alertEngine.thresholds = settings.alertThresholds
         alertEngine.cooldown = settings.alertCooldownMinutes * 60
         let events = alertEngine.evaluate(snapshots: snapshots, temperatureUnit: effectiveTemperatureUnit)
-        if settings.showNotifications {
+        if settings.showNotifications, !events.isEmpty {
             Task { @MainActor in
                 if let failure = await notificationService.deliver(events) {
-                    lastError = failure
+                    actionError = (.notificationDelivery, failure)
+                } else {
+                    clearActionError(.notificationDelivery)
                 }
             }
         }
