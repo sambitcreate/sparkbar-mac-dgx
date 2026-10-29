@@ -39,7 +39,7 @@ jobs:
       - name: Resolve version
         run: |
           set -euo pipefail
-          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
+          if [[ "$GITHUB_EVENT_NAME" == push && "$GITHUB_REF" == refs/tags/v* ]]; then
             version="${GITHUB_REF_NAME#v}"
             # A tag named v* also matches vbeta or vnext. Publishing those as
             # the latest release would outrank a real semantic version.
@@ -220,16 +220,24 @@ jobs:
           Distribution mode: Developer ID signed and Apple notarized.
           Verify the download with the accompanying SHA-256 checksum.
           EOF
+          if [[ "$GITHUB_EVENT_NAME" != push || "$GITHUB_REF" != refs/tags/v* ]]; then
+            cat >> dist/RELEASE_NOTES.md <<'EOF'
+
+          Verification only: this workflow did not publish a GitHub release.
+          The appcast validates signing and format, but its download URL is not
+          published. Do not distribute this appcast as a live update feed.
+          EOF
+          fi
 
       - name: Upload workflow artifact
         uses: actions/upload-artifact@v7
         with:
-          name: SparkBar-${{ env.SPARKBAR_VERSION }}
+          name: SparkBar-${{ env.SPARKBAR_VERSION }}${{ github.event_name == 'workflow_dispatch' && '-verification-only' || '' }}
           path: dist/
           if-no-files-found: error
 
       - name: Publish GitHub release
-        if: ${{ startsWith(github.ref, 'refs/tags/v') }}
+        if: ${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') }}
         env:
           GH_TOKEN: ${{ github.token }}
         run: |

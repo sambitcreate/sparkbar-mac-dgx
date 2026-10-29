@@ -85,7 +85,7 @@ The smoke check exits nonzero unless REST validation and a WebSocket snapshot bo
 ## CI, releases, and signing
 
 - `CI` runs on pull requests and pushes to `main` on macOS 26 and minimum-supported macOS 14 runners: Swift tests, packaged app build, and bundle validation. Changes to only `.md` files skip verification.
-- `Release macOS` runs on version tags (`v*`) and via manual dispatch from the Actions tab. Tag pushes publish the tagged version (`v1.2.3` ships as `1.2.3`); manual runs build `0.1.<run number>` as a verification artifact without changing the latest public release.
+- `Release macOS` runs on version tags (`v*`) and via manual dispatch from the Actions tab. Tag pushes publish the tagged version (`v1.2.3` ships as `1.2.3`); manual runs build `0.1.<run number>` as a `verification-only` artifact without changing the latest public release. Their appcast exercises signing and validation but has unpublished download URLs and must not be used as a live update feed.
 - Public releases require Developer ID signing and Apple notarization. The pipeline uploads a stapled DMG, ZIP update archive, EdDSA-signed Sparkle appcast, and SHA-256 checksums. It stops before publishing if any credential or notarization check fails.
 - Sparkle checks the [latest release appcast](https://github.com/sambitcreate/sparkbar-mac-dgx/releases/latest/download/appcast.xml) in signed builds. Source builds keep update checks disabled.
 - `Pullfrog` is available via manual workflow dispatch; add at least one provider key (e.g. `OPENAI_API_KEY`) as a repository Actions secret first. It is intentionally not attached to `pull_request`, so provider secrets are never exposed to fork code.
