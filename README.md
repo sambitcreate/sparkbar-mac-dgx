@@ -77,8 +77,10 @@ Check an endpoint without launching the app:
 ```sh
 curl -i http://localhost:5555/api/sparks
 curl -i http://localhost:5555/api/settings
-swift run SparkBarSmoke http://localhost:5555
+swift run SparkBarSmoke http://localhost:5555 --timeout 20
 ```
+
+The smoke check exits nonzero unless REST validation and a WebSocket snapshot both succeed within the overall deadline (20 seconds by default). Use `--timeout SECONDS` to change it; the deadline starts after the executable launches, not during `swift run`'s build.
 
 ## CI, releases, and signing
 
