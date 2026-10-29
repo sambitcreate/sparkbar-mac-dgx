@@ -680,7 +680,7 @@ enum LocalNetworkEnumeration {
             ) == 0 else {
                 continue
             }
-            let addressString = String(cString: hostBuffer)
+            let addressString = String(decoding: hostBuffer.prefix { $0 != 0 }.map { UInt8(bitPattern: $0) }, as: UTF8.self)
             guard let address = IPv4Octets(dotted: addressString) else { continue }
             addressByName[name] = address
 
@@ -698,7 +698,7 @@ enum LocalNetworkEnumeration {
                     0,
                     NI_NUMERICHOST
                 ) == 0 {
-                    let maskString = String(cString: maskBuffer)
+                    let maskString = String(decoding: maskBuffer.prefix { $0 != 0 }.map { UInt8(bitPattern: $0) }, as: UTF8.self)
                     if let mask = IPv4Octets(dotted: maskString) {
                         maskByName[name] = mask
                     }

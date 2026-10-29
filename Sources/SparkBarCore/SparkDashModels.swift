@@ -794,7 +794,7 @@ private extension KeyedDecodingContainer {
     ) throws -> (values: [T], dropped: Int, fieldUnreadable: Bool) {
         guard var values = try? nestedUnkeyedContainer(forKey: key) else {
             // Distinguish an absent key from one that is present but malformed.
-            return ([], 0, (try? contains(key)) ?? false)
+            return ([], 0, contains(key))
         }
         var result: [T] = []
         var dropped = 0
