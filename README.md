@@ -42,7 +42,7 @@ open .build/Release/SparkBar.app
 swift test
 ```
 
-All networking, decoding, selection, formatting, history, and alert logic lives in `SparkBarCore`, so the suite runs without launching AppKit. The app target adds the `NSStatusItem`, the SwiftUI popover and settings window, launch-at-login, and notifications.
+Networking, decoding, selection, formatting, history, and alert logic live in `SparkBarCore`. App lifecycle tests also cover endpoint switching, ordered history persistence, settings errors, and launch-at-login state handling without launching the GUI or changing system settings. These app tests still link the app's macOS frameworks, including Sparkle; the test target supplies a bundle-relative framework search path, so no `.build` symlink workaround is needed.
 
 ## Connect to sparkDash
 

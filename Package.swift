@@ -42,7 +42,13 @@ let package = Package(
         .testTarget(
             name: "SparkBarAppTests",
             dependencies: ["SparkBar", "SparkBarCore"],
-            path: "Tests/SparkBarAppTests"
+            path: "Tests/SparkBarAppTests",
+            linkerSettings: [
+                // SwiftPM can put binary frameworks beside the .xctest bundle
+                // instead of in PackageFrameworks. Anchor to the test image,
+                // not the external xctest host or a machine-specific build path.
+                .unsafeFlags(["-Xlinker", "-rpath", "-Xlinker", "@loader_path/../../.."])
+            ]
         )
     ]
 )
