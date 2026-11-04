@@ -24,6 +24,7 @@ let package = Package(
             name: "SparkBar",
             dependencies: ["SparkBarCore", .product(name: "Sparkle", package: "Sparkle")],
             path: "Sources/SparkBar",
+            resources: [.process("Resources")],
             linkerSettings: [
                 .unsafeFlags(["-Xlinker", "-rpath", "-Xlinker", "@executable_path/../Frameworks"])
             ]
