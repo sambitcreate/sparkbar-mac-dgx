@@ -4,167 +4,143 @@ import SwiftUI
 struct OverviewView: View {
     let model: AppModel
     let selectSpark: (String) -> Void
-
-    private var onlineSnapshots: [SparkSnapshot] { model.snapshots.filter(\.isOnline) }
+    @Environment(\.sparkTheme) private var theme
+    private var online: [SparkSnapshot] { model.snapshots.filter(\.isOnline) }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 14) {
-            HStack(alignment: .firstTextBaseline) {
-                Text("Overview")
-                    .font(.title3.weight(.semibold))
+        VStack(alignment: .leading, spacing: 18) {
+            HStack {
+                Text("Fleet at a glance").font(.subheadline.weight(.semibold))
                 Spacer()
-                Text("\(model.snapshots.count) systems · \(model.onlineCount) online")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
+                Text("\(model.snapshots.count) systems").font(.system(size: 10))
+                    .foregroundStyle(theme.secondaryText)
             }
-
-            HStack(spacing: 8) {
-                SummaryCard(title: "Max GPU", value: MetricFormatter.percent(onlineSnapshots.map(\.gpuUsage).max()), icon: "gauge.with.dots.needle.67percent")
-                SummaryCard(title: "Memory", value: aggregateMemory, icon: "memorychip")
-                SummaryCard(title: "Power", value: aggregatePower, icon: "bolt")
+            HStack(alignment: .top, spacing: 10) {
+                FleetMetric(value: MetricFormatter.percent(online.compactMap { $0.metrics?.gpu?.usage }.max()), label: "Max GPU")
+                FleetMetric(value: aggregateMemory, label: "Memory in use")
+                FleetMetric(value: aggregatePower, label: "System power", marker: theme.power)
             }
-
-            VStack(spacing: 8) {
+            Divider().overlay(theme.hairline)
+            HStack {
+                Text("Your systems").font(.subheadline.weight(.semibold))
+                Spacer()
+                Text("\(model.onlineCount) online").font(.system(size: 10)).foregroundStyle(theme.secondaryText)
+            }
+            VStack(spacing: 0) {
                 ForEach(model.snapshots) { snapshot in
-                    Button {
-                        selectSpark(snapshot.id)
-                    } label: {
-                            SparkOverviewRow(snapshot: snapshot, temperatureUnit: model.effectiveTemperatureUnit)
+                    Button { selectSpark(snapshot.id) } label: {
+                        SparkOverviewRow(snapshot: snapshot, temperatureUnit: model.effectiveTemperatureUnit)
                     }
                     .buttonStyle(.plain)
+                    .accessibilityElement(children: .ignore)
+                    .accessibilityLabel("\(snapshot.name), \(snapshot.isOnline ? "online" : "offline"), GPU \(MetricFormatter.percent(snapshot.metrics?.gpu?.usage)), memory \(MetricFormatter.percent(snapshot.memoryPressurePercentage))")
+                    .accessibilityHint("Open \(snapshot.name) details")
+                    .accessibilityAddTraits(.isButton)
+                    if snapshot.id != model.snapshots.last?.id { Divider().overlay(theme.hairline).padding(.vertical, 16) }
                 }
             }
         }
     }
 
     private var aggregateMemory: String {
-        guard !onlineSnapshots.isEmpty,
-              onlineSnapshots.allSatisfy({ $0.memoryUsedMB != nil && $0.memoryTotalMB != nil }) else {
-            return "—"
-        }
-        let used = onlineSnapshots.compactMap(\.memoryUsedMB).reduce(0, +)
-        let total = onlineSnapshots.compactMap(\.memoryTotalMB).reduce(0, +)
-        return "\(MetricFormatter.memory(used, includeUnit: false)) / \(MetricFormatter.memory(total))"
+        guard !online.isEmpty, online.allSatisfy({ $0.memoryUsedMB != nil && $0.memoryTotalMB != nil }) else { return "—" }
+        return MetricFormatter.memory(online.compactMap(\.memoryUsedMB).reduce(0, +))
     }
-
     private var aggregatePower: String {
-        guard !onlineSnapshots.isEmpty,
-              onlineSnapshots.allSatisfy({ $0.metrics?.gpu?.power?.systemDraw != nil }) else {
-            return "—"
-        }
-        let total = onlineSnapshots.compactMap { $0.metrics?.gpu?.power?.systemDraw }.reduce(0, +)
-        return "~\(MetricFormatter.watts(total))"
+        guard !online.isEmpty, online.allSatisfy({ $0.metrics?.gpu?.power?.systemDraw != nil }) else { return "—" }
+        return "~\(MetricFormatter.watts(online.compactMap { $0.metrics?.gpu?.power?.systemDraw }.reduce(0, +)))"
     }
 }
 
-private struct SummaryCard: View {
-    let title: String
+private struct FleetMetric: View {
     let value: String
-    let icon: String
-
+    let label: String
+    var marker: Color? = nil
+    @Environment(\.sparkTheme) private var theme
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
-            Image(systemName: icon)
-                .font(.caption)
-                .foregroundStyle(.secondary)
-                .accessibilityHidden(true)
-            Text(value)
-                .font(.headline.monospacedDigit())
-                .lineLimit(1)
-                .minimumScaleFactor(0.7)
-            Text(title)
-                .font(.caption2)
-                .foregroundStyle(.secondary)
+            Text(value).font(.system(size: 23, weight: .semibold, design: .rounded).monospacedDigit())
+                .lineLimit(1).minimumScaleFactor(0.7)
+            HStack(spacing: 4) {
+                if let marker { Circle().fill(marker).frame(width: 5, height: 5).accessibilityHidden(true) }
+                Text(label).font(.system(size: 10)).foregroundStyle(theme.secondaryText)
+            }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(10)
-        .background(.quaternary.opacity(0.6), in: RoundedRectangle(cornerRadius: 10))
         .accessibilityElement(children: .combine)
-        .accessibilityLabel("\(title), \(value)")
     }
 }
 
 private struct SparkOverviewRow: View {
     let snapshot: SparkSnapshot
     let temperatureUnit: TemperatureUnit
+    @Environment(\.sparkTheme) private var theme
 
     var body: some View {
-        HStack(alignment: .top, spacing: 10) {
-            Circle()
-                .fill(snapshot.isOnline ? .green : .secondary)
-                .frame(width: 8, height: 8)
-                .padding(.top, 5)
-                .accessibilityHidden(true)
-            VStack(alignment: .leading, spacing: 5) {
+        VStack(alignment: .leading, spacing: 14) {
+            HStack(spacing: 10) {
+                Group {
+                    if snapshot.isGPUHost { Image(systemName: "server.rack").font(.system(size: 22)) }
+                    else { DGXDeviceIcon().frame(width: 32, height: 25) }
+                }
+                .frame(width: 35, height: 35)
+                .background(theme.control.opacity(0.45), in: RoundedRectangle(cornerRadius: 9))
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(snapshot.name).font(.system(size: 15, weight: .bold, design: .rounded))
+                    Text(roleLabel).font(.system(size: 10)).foregroundStyle(theme.secondaryText)
+                        .lineLimit(1)
+                }
+                Spacer(minLength: 2)
+                HStack(spacing: 4) {
+                    Circle().fill(snapshot.isOnline ? Color(hex: theme.dark ? 0x8BBB9E : 0x347451) : .secondary)
+                        .frame(width: 5, height: 5)
+                    Text(snapshot.isOnline ? "Online" : "Offline").font(.system(size: 10))
+                }
+                .foregroundStyle(theme.secondaryText)
+                Image(systemName: "chevron.right").font(.system(size: 10, weight: .semibold))
+                    .foregroundStyle(theme.secondaryText)
+            }
+            if snapshot.isOnline {
                 HStack {
-                    Text(snapshot.name)
-                        .font(.headline)
-                    if let hint = GB10Identity.match(
-                        kind: snapshot.kind,
-                        name: snapshot.name,
-                        id: snapshot.id,
-                        hardware: snapshot.hardware
-                    )?.vendorHint {
-                        Text(hint)
-                            .font(.caption.weight(.medium))
-                            .foregroundStyle(.secondary)
-                    } else if snapshot.isGPUHost {
-                        Text("Host")
-                            .font(.caption.weight(.medium))
-                            .foregroundStyle(.secondary)
-                    }
-                    Spacer()
-                    Image(systemName: "chevron.right")
-                        .font(.caption.weight(.semibold))
-                        .foregroundStyle(.tertiary)
-                        .accessibilityHidden(true)
+                    CompactValue(label: "GPU", value: MetricFormatter.percent(snapshot.metrics?.gpu?.usage))
+                    CompactValue(label: "Temperature", value: MetricFormatter.temperatureShort(snapshot.metrics?.gpu?.temperature, unit: temperatureUnit))
+                    CompactValue(label: "Memory used", value: MetricFormatter.memory(snapshot.memoryUsedMB))
                 }
-                if snapshot.isOnline {
-                    HStack(spacing: 12) {
-                        CompactValue(label: "GPU", value: MetricFormatter.percent(snapshot.metrics?.gpu?.usage))
-                        CompactValue(label: "Temp", value: MetricFormatter.temperatureShort(snapshot.metrics?.gpu?.temperature, unit: temperatureUnit))
-                        CompactValue(label: "Memory", value: MetricFormatter.percent(snapshot.memoryPressurePercentage))
+                if let memory = snapshot.memoryPressurePercentage {
+                    ProgressView(value: min(max(memory / 100, 0), 1)).tint(theme.memory)
+                    HStack {
+                        Text("\(MetricFormatter.percent(memory)) of \(MetricFormatter.memory(snapshot.memoryTotalMB))")
+                        Spacer()
+                        Text("View details")
                     }
-                    if snapshot.role == "worker" {
-                        Text("Worker node · \(snapshot.workerLabel ?? "no label")")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                    } else if let llm = snapshot.primaryLLM, llm.available != false {
-                        Text("\(llm.modelId ?? llm.backend ?? "LLM") · \(MetricFormatter.tokensPerSecond(llm.generationTps))")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                    } else {
-                        Text("Idle")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                    }
-                } else {
-                    Text("Offline")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
+                    .font(.system(size: 10)).foregroundStyle(theme.secondaryText)
                 }
+            } else {
+                Text("No live readings").font(.caption).foregroundStyle(theme.secondaryText)
             }
         }
-        .padding(12)
-        .background(.quaternary.opacity(0.45), in: RoundedRectangle(cornerRadius: 12))
+        .contentShape(Rectangle())
         .accessibilityElement(children: .combine)
-        .accessibilityLabel(rowLabel)
+        .accessibilityHint("Open \(snapshot.name) details")
     }
 
-    private var rowLabel: String {
-        if !snapshot.isOnline { return "\(snapshot.name), offline" }
-        return "\(snapshot.name), GPU \(MetricFormatter.percent(snapshot.metrics?.gpu?.usage)), \(MetricFormatter.temperature(snapshot.metrics?.gpu?.temperature, unit: temperatureUnit)), memory \(MetricFormatter.percent(snapshot.memoryPressurePercentage))"
+    private var roleLabel: String {
+        let role = snapshot.role == "worker" ? "Worker" : snapshot.role == "head" ? "Head" : "Standalone"
+        let hardware = snapshot.isGPUHost ? "GPU host" : GB10Identity.match(kind: snapshot.kind, name: snapshot.name, id: snapshot.id, hardware: snapshot.hardware) != nil ? "NVIDIA GB10" : "Spark"
+        return "\(role) · \(hardware)"
     }
 }
 
 private struct CompactValue: View {
     let label: String
     let value: String
-
+    @Environment(\.sparkTheme) private var theme
     var body: some View {
-        VStack(alignment: .leading, spacing: 1) {
-            Text(value).font(.subheadline.monospacedDigit().weight(.medium))
-            Text(label).font(.caption2).foregroundStyle(.secondary)
+        VStack(alignment: .leading, spacing: 4) {
+            Text(value).font(.system(size: 17, weight: .semibold).monospacedDigit())
+                .lineLimit(1).minimumScaleFactor(0.7)
+            Text(label).font(.system(size: 10)).foregroundStyle(theme.secondaryText)
         }
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 }
