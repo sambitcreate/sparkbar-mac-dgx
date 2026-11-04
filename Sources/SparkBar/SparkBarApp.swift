@@ -19,7 +19,7 @@ struct SparkBarApp {
 
 @MainActor
 final class AppCoordinator {
-    let model = AppModel()
+    let model: AppModel
     private var statusItemController: StatusItemController?
     private var settingsWindowController: NSWindowController?
     private let sleepWakeMonitor = SleepWakeMonitor()
@@ -27,6 +27,12 @@ final class AppCoordinator {
     private var didStart = false
     // Retained for the process lifetime; the coordinator never deinitializes.
     private var terminationObserver: NSObjectProtocol?
+
+    init() {
+        // Swift 6.0.3 crashes lowering this actor-isolated call as a stored
+        // property default. Keep initialization in the main-actor initializer.
+        model = AppModel()
+    }
 
     func start() {
         guard !didStart else { return }
