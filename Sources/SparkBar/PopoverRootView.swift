@@ -4,210 +4,221 @@ import SparkBarCore
 import SwiftUI
 
 struct PopoverRootView: View {
-    /// Single source of truth for the popover dimensions; the status item
-    /// controller sizes its NSPopover from this.
     static let contentSize = CGSize(width: 390, height: 680)
-
     @Bindable var model: AppModel
     let openSettings: () -> Void
+    @Environment(\.colorScheme) private var systemScheme
+    @AppStorage("sparkbar.palette") private var paletteRaw = SparkPalette.slate.rawValue
+    @AppStorage("sparkbar.appearance") private var appearanceRaw = SparkAppearance.system.rawValue
     @State private var selectedSection: DashboardSection = .overview
+    @State private var showsAppearance = false
+
+    private var appearance: SparkAppearance { SparkAppearance(rawValue: appearanceRaw) ?? .system }
+    private var scheme: ColorScheme { appearance.colorScheme ?? systemScheme }
+    private var theme: SparkTheme {
+        SparkTheme(palette: SparkPalette(rawValue: paletteRaw) ?? .slate, dark: scheme == .dark)
+    }
 
     var body: some View {
-        VStack(spacing: 0) {
-            HeaderView(model: model)
-            sectionPicker
-            Divider()
-
-            if model.snapshots.isEmpty {
-                if model.connectionState.isLive, model.configuredSparks.isEmpty {
-                    NoSparksView(model: model)
-                } else {
-                    ConnectionView(model: model)
-                }
-            } else {
-                ScrollView {
-                    Group {
-                        if selectedSection == .overview {
-                            OverviewView(model: model) { id in
-                                selectedSection = .spark(id)
-                                model.setSelectedSpark(id)
-                            }
-                        } else if case .spark(let id) = selectedSection,
-                                  let snapshot = model.snapshots.first(where: { $0.id == id }) {
-                            SparkDetailView(
-                                snapshot: snapshot,
-                                isServerLive: model.connectionState.isLive,
-                                isPolling: model.connectionState == .apiReachableLiveStreamUnavailable,
-                                temperatureUnit: model.effectiveTemperatureUnit,
-                                history: model.history.samples(for: snapshot.id),
-                                archivedHistory: model.history.archiveSamples(for: snapshot.id),
-                                outages: model.history.outages
-                            )
-                        } else if let snapshot = model.selectedSnapshot {
-                            SparkDetailView(
-                                snapshot: snapshot,
-                                isServerLive: model.connectionState.isLive,
-                                isPolling: model.connectionState == .apiReachableLiveStreamUnavailable,
-                                temperatureUnit: model.effectiveTemperatureUnit,
-                                history: model.history.samples(for: snapshot.id),
-                                archivedHistory: model.history.archiveSamples(for: snapshot.id),
-                                outages: model.history.outages
-                            )
-                        }
-                    }
-                    .padding(16)
-                }
-                .scrollIndicators(.automatic)
+        ZStack(alignment: .bottom) {
+            VStack(spacing: 0) {
+                HeaderView(model: model) { showsAppearance = true }
+                    .padding(.bottom, 16)
+                content
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .background(theme.surface, in: RoundedRectangle(cornerRadius: 20))
+                    .clipShape(RoundedRectangle(cornerRadius: 20))
+                if !model.snapshots.isEmpty { sectionPicker.padding(.top, 12) }
+                footer.padding(.top, 12)
             }
-
-            Divider()
-            FooterView(model: model, openSettings: openSettings)
+            .padding(.horizontal, 18)
+            .padding(.top, 22)
+            .padding(.bottom, 15)
+            .allowsHitTesting(!showsAppearance)
+            .accessibilityHidden(showsAppearance)
+            if showsAppearance {
+                Color.black.opacity(0.22).ignoresSafeArea()
+                SparkAppearanceView(model: model, paletteRaw: $paletteRaw, appearanceRaw: $appearanceRaw,
+                                    close: { showsAppearance = false },
+                                    openSettings: { showsAppearance = false; openSettings() })
+                    .padding(13)
+                    .onExitCommand { showsAppearance = false }
+            }
         }
         .frame(width: Self.contentSize.width, height: Self.contentSize.height)
-        .background(.regularMaterial)
+        .background(theme.base)
+        .foregroundStyle(theme.text)
+        .tint(theme.primary)
+        .environment(\.sparkTheme, theme)
+        .environment(\.colorScheme, scheme)
+        .preferredColorScheme(appearance.colorScheme)
         .modifier(InsecureConnectionAlert(model: model))
         .onChange(of: model.snapshots.map(\.id), initial: true) { _, ids in
-            if case .spark(let id) = selectedSection, !ids.contains(id) {
-                selectedSection = .overview
-            }
+            if case .spark(let id) = selectedSection, !ids.contains(id) { selectedSection = .overview }
         }
         .onChange(of: model.focusedSparkID) { _, focusedID in
-            // Notification taps ask the popover to jump straight to the
-            // alerting spark's detail page.
             guard let focusedID else { return }
-            if model.snapshots.contains(where: { $0.id == focusedID }) {
-                selectedSection = .spark(focusedID)
-            }
-            // Consume even when the spark is momentarily absent so a stale
-            // value cannot swallow the next tap for the same spark.
+            if model.snapshots.contains(where: { $0.id == focusedID }) { selectedSection = .spark(focusedID) }
             model.clearFocus()
         }
     }
 
+    @ViewBuilder private var content: some View {
+        if model.snapshots.isEmpty {
+            if model.connectionState.isLive, model.configuredSparks.isEmpty { NoSparksView(model: model) }
+            else { ConnectionView(model: model) }
+        } else {
+            ScrollView {
+                VStack(alignment: .leading, spacing: 16) {
+                    if !model.connectionState.isLive {
+                        Label("Last known readings · \(model.connectionState.shortLabel)", systemImage: "wifi.slash")
+                            .font(.caption).foregroundStyle(theme.secondaryText)
+                        Button("Reconnect") { model.connectFromSettings() }.buttonStyle(.link)
+                    }
+                    if selectedSection == .overview {
+                        OverviewView(model: model) { id in
+                            selectedSection = .spark(id)
+                            model.setSelectedSpark(id)
+                        }
+                    } else if let snapshot = visibleSnapshot {
+                        SparkDetailView(snapshot: snapshot, isServerLive: model.connectionState.isLive,
+                                        isPolling: model.connectionState == .apiReachableLiveStreamUnavailable,
+                                        temperatureUnit: model.effectiveTemperatureUnit,
+                                        history: model.history.samples(for: snapshot.id),
+                                        archivedHistory: model.history.archiveSamples(for: snapshot.id),
+                                        outages: model.history.outages)
+                    }
+                }
+                .padding(22)
+            }
+            .scrollIndicators(.automatic)
+        }
+    }
+
+    private var visibleSnapshot: SparkSnapshot? {
+        if case .spark(let id) = selectedSection { return model.snapshots.first { $0.id == id } }
+        return model.selectedSnapshot
+    }
+
     private var sectionPicker: some View {
         ScrollView(.horizontal, showsIndicators: false) {
-            HStack(spacing: 6) {
-                SectionButton(title: "Overview", isSelected: selectedSection == .overview) {
+            HStack(spacing: 7) {
+                SectionButton(title: "Overview", isSelected: selectedSection == .overview, isDevice: false) {
                     selectedSection = .overview
                 }
                 ForEach(model.snapshots) { snapshot in
-                    SectionButton(
-                        title: snapshot.name,
-                        isSelected: selectedSection == .spark(snapshot.id),
-                        status: snapshot.isOnline
-                    ) {
+                    SectionButton(title: snapshot.name, isSelected: selectedSection == .spark(snapshot.id),
+                                  isDevice: !snapshot.isGPUHost, online: snapshot.isOnline) {
                         selectedSection = .spark(snapshot.id)
                         model.setSelectedSpark(snapshot.id)
                     }
                 }
             }
-            .padding(.horizontal, 12)
-            .padding(.vertical, 8)
         }
         .accessibilityElement(children: .contain)
         .accessibilityLabel("Spark selection")
     }
+
+    private var footer: some View {
+        HStack {
+            TimelineView(.periodic(from: .now, by: 5)) { context in
+                Text(snapshotAge(asOf: context.date)).foregroundStyle(theme.secondaryText)
+            }
+            Spacer()
+            Button { model.openSparkDash() } label: {
+                Label("Open dashboard", systemImage: "arrow.up.right.square")
+            }
+            .buttonStyle(.plain)
+            .foregroundStyle(theme.secondaryText)
+        }
+        .font(.system(size: 10))
+        .padding(.horizontal, 5)
+    }
+
+    private func snapshotAge(asOf date: Date) -> String {
+        guard let last = model.lastSnapshotAt else { return "sparkDash" }
+        let seconds = max(0, Int(date.timeIntervalSince(last)))
+        if seconds < 60 { return "Updated \(seconds)s ago" }
+        if seconds < 3600 { return "Updated \(seconds / 60)m ago" }
+        return "Updated \(seconds / 3600)h ago"
+    }
+
 }
 
-private enum DashboardSection: Equatable {
-    case overview
-    case spark(String)
-}
+private enum DashboardSection: Equatable { case overview, spark(String) }
 
 private struct HeaderView: View {
     let model: AppModel
+    let openAppearance: () -> Void
+    @Environment(\.sparkTheme) private var theme
+    private var heading: FleetModelHeading? { FleetModelHeading.resolve(model.snapshots) }
 
     var body: some View {
-        HStack(alignment: .center, spacing: 10) {
-            Image(systemName: "bolt.fill")
-                .font(.title2.weight(.semibold))
-                .foregroundStyle(.yellow)
-                .accessibilityHidden(true)
-            VStack(alignment: .leading, spacing: 1) {
-                Text("SparkBar")
-                    .font(.headline)
-                Text(statusText)
-                    .font(.caption)
-                    .foregroundStyle(statusColor)
+        HStack(alignment: .top, spacing: 10) {
+            VStack(alignment: .leading, spacing: 8) {
+                Text(heading?.displayName ?? (model.snapshots.isEmpty ? "SparkBar" : "No model loaded"))
+                    .font(.system(size: 28, weight: .bold, design: .rounded))
+                    .tracking(-0.5)
+                    .lineLimit(3).minimumScaleFactor(0.8)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .help(heading?.name ?? "Connect to sparkDash to see the live model")
+                    .accessibilityAddTraits(.isHeader)
+                HStack(spacing: 5) {
+                    Circle().fill(statusColor).frame(width: 6, height: 6).accessibilityHidden(true)
+                    Text(statusText).font(.system(size: 10)).foregroundStyle(theme.secondaryText)
+                        .lineLimit(2)
+                }
             }
-            Spacer()
-            Circle()
-                .fill(statusColor)
-                .frame(width: 8, height: 8)
-                .accessibilityHidden(true)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            Button(action: openAppearance) {
+                Image(systemName: "slider.horizontal.3").font(.system(size: 17))
+                    .frame(width: 43, height: 43)
+                    .background(theme.control, in: Circle())
+            }
+            .buttonStyle(.plain).foregroundStyle(theme.secondaryText)
+            .accessibilityLabel("Appearance and settings")
         }
-        .padding(.horizontal, 16)
-        .padding(.top, 14)
-        .padding(.bottom, 10)
-        .accessibilityElement(children: .combine)
-        .accessibilityLabel("SparkBar, \(statusText)")
+        .padding(.horizontal, 5)
     }
 
     private var statusText: String {
-        let age = ageSuffix
-        if model.connectionState == .connected {
-            return model.snapshots.isEmpty ? "Live" : "Live · \(model.onlineCount) online\(age)"
+        let backend = heading?.backend.map { "\($0) · " } ?? ""
+        if !model.connectionState.isLive {
+            return heading == nil ? model.connectionState.shortLabel : "Disconnected · last known model"
         }
-        if model.connectionState == .apiReachableLiveStreamUnavailable, !model.snapshots.isEmpty {
-            return "Polling · \(model.onlineCount) online\(age)"
-        }
-        if model.snapshots.isEmpty { return model.connectionState.shortLabel }
-        return "Last known · \(model.connectionState.shortLabel)"
+        if heading?.isCurrent == false { return "\(backend)Model unavailable · last known name" }
+        let mode = model.connectionState == .apiReachableLiveStreamUnavailable ? "Polling" : "Live"
+        return "\(backend)\(mode) · \(model.onlineCount) online"
     }
-
-    private var ageSuffix: String {
-        guard let last = model.lastSnapshotAt else { return "" }
-        let seconds = max(0, Date.now.timeIntervalSince(last))
-        if seconds < 60 { return " · updated \(Int(seconds))s ago" }
-        let minutes = Int(seconds) / 60
-        if minutes < 60 { return " · updated \(minutes)m ago" }
-        return " · updated \(minutes / 60)h \(minutes % 60)m ago"
-    }
-
     private var statusColor: Color {
-        switch model.connectionState {
-        case .connected: return .green
-        case .apiReachableLiveStreamUnavailable: return model.snapshots.isEmpty ? .secondary : .orange
-        case .connecting, .reconnecting: return .orange
-        default: return .secondary
-        }
+        model.connectionState.isLive ? Color(hex: theme.dark ? 0x8BBB9E : 0x347451) : .orange
     }
 }
 
 private struct SectionButton: View {
     let title: String
     let isSelected: Bool
-    var status: Bool?
+    let isDevice: Bool
+    var online: Bool? = nil
     let action: () -> Void
-
-    init(title: String, isSelected: Bool, status: Bool? = nil, action: @escaping () -> Void) {
-        self.title = title
-        self.isSelected = isSelected
-        self.status = status
-        self.action = action
-    }
+    @Environment(\.sparkTheme) private var theme
 
     var body: some View {
         Button(action: action) {
-            HStack(spacing: 5) {
-                if let status {
-                    Circle()
-                        .fill(status ? .green : .secondary)
-                        .frame(width: 6, height: 6)
-                        .accessibilityHidden(true)
-                }
-                Text(title)
-                    .lineLimit(1)
+            HStack(spacing: 6) {
+                if isDevice { DGXDeviceIcon().frame(width: 23, height: 19) }
+                else { Image(systemName: online == nil ? "square.grid.2x2" : "server.rack").font(.system(size: 13)) }
+                Text(title).lineLimit(1)
             }
-            .font(.caption.weight(isSelected ? .semibold : .regular))
-            .padding(.horizontal, 9)
-            .padding(.vertical, 5)
-            .background(isSelected ? Color.accentColor.opacity(0.18) : .clear, in: Capsule())
+            .font(.system(size: 12, weight: .semibold, design: .rounded))
+            .padding(.horizontal, 13)
+            .frame(minWidth: 105, minHeight: 43)
+            .background(isSelected ? theme.primary : theme.control, in: Capsule())
+            .foregroundStyle(isSelected ? theme.onPrimary : theme.secondaryText)
         }
         .buttonStyle(.plain)
-        .foregroundStyle(isSelected ? .primary : .secondary)
         .accessibilityAddTraits(isSelected ? [.isSelected] : [])
-        .accessibilityLabel(status == false ? "\(title), offline" : title)
+        .accessibilityLabel(online == false ? "\(title), offline" : title)
     }
 }
 
@@ -397,50 +408,5 @@ private struct NoSparksView: View {
             Spacer()
         }
         .padding(24)
-    }
-}
-
-private struct FooterView: View {
-    let model: AppModel
-    let openSettings: () -> Void
-
-    var body: some View {
-        HStack(spacing: 4) {
-            Button {
-                model.openSparkDash()
-            } label: {
-                Label("Open sparkDash", systemImage: "arrow.up.right.square")
-            }
-            .buttonStyle(.plain)
-            .foregroundStyle(.secondary)
-
-            Spacer()
-
-            Button {
-                model.openSparkBarRepository()
-            } label: {
-                Image(systemName: "link")
-                    .accessibilityLabel("SparkBar GitHub repository")
-            }
-            .buttonStyle(.plain)
-            .help("SparkBar GitHub repository")
-
-            Button(action: openSettings) {
-                Image(systemName: "gearshape")
-                    .accessibilityLabel("Settings")
-            }
-            .buttonStyle(.plain)
-
-            Button {
-                NSApp.terminate(nil)
-            } label: {
-                Image(systemName: "power")
-                    .accessibilityLabel("Quit SparkBar")
-            }
-            .buttonStyle(.plain)
-        }
-        .font(.caption)
-        .padding(.horizontal, 14)
-        .padding(.vertical, 10)
     }
 }
