@@ -16,6 +16,14 @@ SparkBar lives in your menu bar and streams live DGX Spark snapshots over WebSoc
 - The popover shows an overview of all Sparks, per-Spark detail pages (GPU, unified memory, network, storage, LLM and ComfyUI monitoring, Hermes Agent updates), and a rolling GPU/memory history chart.
 - If sparkDash is reachable over REST but its WebSocket is blocked, SparkBar keeps refreshing through `GET /api/sparks/:id/metrics` polling until the stream recovers.
 
+## Appearance and navigation
+
+The popover keeps the fleet’s active model name at the top while you move between Overview, head, and worker. On a connection interruption it retains the last known model with an explicit disconnected label. An available online model takes priority over a stale model, and worker-only records never become the model heading.
+
+The bottom dock switches between the fleet overview and each system. Node pages have **Metrics** and **History** tabs; the history ranges and CSV export remain available. DGX nodes use the bundled vector enclosure illustration, while dedicated GPU hosts keep their server icon.
+
+Open the sliders button for **Slate**, **Mineral**, **Clay**, **Lichen**, or **Ink** palettes, plus System / Light / Dark appearance. Each palette uses flat neutral layers with separate activity, memory, and power accents. These preferences persist locally. The same sheet offers menu-bar display and temperature controls; **Connection & all settings…** opens the full settings window.
+
 ## Quick start
 
 ### Prerequisites

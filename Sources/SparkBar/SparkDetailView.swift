@@ -11,12 +11,19 @@ struct SparkDetailView: View {
     let history: [MetricHistoryPoint]
     let archivedHistory: [MetricHistoryPoint]
     let outages: [HistoryOutage]
+    @State private var selectedTab = DetailTab.metrics
+
+    private enum DetailTab: String, CaseIterable { case metrics = "Metrics", history = "History" }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
             DetailHeader(snapshot: snapshot, isServerLive: isServerLive, isPolling: isPolling)
+            SparkSegmentedControl(options: DetailTab.allCases, selection: $selectedTab) { $0.rawValue }
+                .accessibilityLabel("Node details")
+            if selectedTab == .metrics {
             if snapshot.isOnline {
                 GPUCard(snapshot: snapshot, temperatureUnit: temperatureUnit)
+                RecentGPUChart(history: history)
                 MemoryCard(snapshot: snapshot)
                 SystemSummary(snapshot: snapshot, temperatureUnit: temperatureUnit)
                 if let llms = snapshot.metrics?.llm, !llms.isEmpty {
@@ -46,7 +53,8 @@ struct SparkDetailView: View {
             } else {
                 OfflineCard()
             }
-            if !history.isEmpty || !archivedHistory.isEmpty || !outages.isEmpty {
+            }
+            if selectedTab == .history {
                 HistoryChart(
                     sparkName: snapshot.name,
                     history: history,
@@ -63,6 +71,45 @@ struct SparkDetailView: View {
             let port = metrics.port ?? configuredPort ?? snapshot.llmPort
             return LLMEntry(id: "\(metrics.id)#\(port.map(String.init) ?? String(index))", metrics: metrics, port: port)
         }
+    }
+}
+
+private struct RecentGPUChart: View {
+    let history: [MetricHistoryPoint]
+    @Environment(\.sparkTheme) private var theme
+    private var points: [MetricHistoryPoint] {
+        history.filter { $0.date >= .now.addingTimeInterval(-5 * 60) }
+    }
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack {
+                Text("GPU activity").font(.subheadline.weight(.semibold))
+                Spacer()
+                Text("Last 5 minutes").font(.system(size: 10)).foregroundStyle(theme.secondaryText)
+            }
+            if points.contains(where: { $0.gpuUsage != nil }) {
+                Chart(points) { point in
+                    if let usage = point.gpuUsage {
+                        LineMark(x: .value("Time", point.date), y: .value("GPU", usage))
+                            .foregroundStyle(theme.primary)
+                    }
+                }
+                .chartYScale(domain: 0...100)
+                .chartXAxis(.hidden)
+                .chartYAxis { AxisMarks(values: [0, 50, 100]) }
+                .frame(height: 95)
+                .accessibilityLabel("GPU utilization over the last five minutes")
+                HStack {
+                    if let first = points.first { Text(first.date, format: .dateTime.hour().minute()) }
+                    Spacer()
+                    if let last = points.last { Text(last.date, format: .dateTime.hour().minute()) }
+                }
+                .font(.system(size: 9)).foregroundStyle(theme.secondaryText)
+            } else {
+                Text("Waiting for GPU samples").font(.caption).foregroundStyle(theme.secondaryText)
+            }
+        }
+        .metricCard()
     }
 }
 
@@ -102,7 +149,7 @@ private struct DetailHeader: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
             } else if snapshot.role == "worker" {
-                Label("Worker node · \(snapshot.workerLabel ?? "no label")", systemImage: "square.3.layers.3d")
+                Label(snapshot.workerLabel.map { "Worker node · \($0)" } ?? "Worker node", systemImage: "square.3.layers.3d")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
@@ -119,6 +166,7 @@ private struct DetailHeader: View {
 }
 
 private struct GPUCard: View {
+    @Environment(\.sparkTheme) private var theme
     let snapshot: SparkSnapshot
     let temperatureUnit: TemperatureUnit
 
@@ -134,7 +182,7 @@ private struct GPUCard: View {
             }
             if let usage = gpu?.usage {
                 ProgressView(value: usage / 100)
-                    .tint(.accentColor)
+                    .tint(theme.primary)
             }
             HStack(spacing: 0) {
                 MetricPair(label: "Temperature", value: MetricFormatter.temperature(gpu?.temperature, unit: temperatureUnit))
@@ -165,6 +213,7 @@ private struct GPUCard: View {
 }
 
 private struct MemoryCard: View {
+    @Environment(\.sparkTheme) private var theme
     let snapshot: SparkSnapshot
 
     var body: some View {
@@ -218,7 +267,7 @@ private struct MemoryCard: View {
                     .font(.headline.monospacedDigit())
             }
             if let percentage = vram?.percentage {
-                ProgressView(value: percentage / 100)
+                ProgressView(value: percentage / 100).tint(theme.memory)
             }
             Text("\(MetricFormatter.memory(vram?.available)) available")
                 .font(.caption)
@@ -231,7 +280,7 @@ private struct MemoryCard: View {
         switch risk?.lowercased() {
         case "high", "critical": return .orange
         case "medium": return .yellow
-        default: return .accentColor
+        default: return theme.memory
         }
     }
 }
@@ -561,6 +610,7 @@ private struct SectionTitle: View {
 }
 
 private struct HistoryChart: View {
+    @Environment(\.sparkTheme) private var theme
     let sparkName: String
     let history: [MetricHistoryPoint]
     let archive: [MetricHistoryPoint]
@@ -635,7 +685,7 @@ private struct HistoryChart: View {
                     }
                 }
                 .chartYScale(domain: 0...100)
-                .chartForegroundStyleScale(["GPU": .blue, "Memory": .orange])
+                .chartForegroundStyleScale(["GPU": theme.primary, "Memory": theme.memory])
                 .chartLegend(position: .top, alignment: .leading)
                 .chartXAxis {
                     AxisMarks(values: .automatic(desiredCount: 3))
@@ -794,8 +844,7 @@ private struct SmallMetricCard: View {
             Text(detail).font(.caption2).foregroundStyle(.secondary).lineLimit(1).minimumScaleFactor(0.7)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(10)
-        .background(.quaternary.opacity(0.6), in: RoundedRectangle(cornerRadius: 10))
+        .padding(.vertical, 10)
         .accessibilityElement(children: .combine)
         .accessibilityLabel("\(title), \(value), \(detail)")
     }
@@ -803,7 +852,15 @@ private struct SmallMetricCard: View {
 
 private extension View {
     func metricCard() -> some View {
-        padding(12)
-            .background(.quaternary.opacity(0.45), in: RoundedRectangle(cornerRadius: 12))
+        modifier(MetricSectionModifier())
+    }
+}
+
+private struct MetricSectionModifier: ViewModifier {
+    @Environment(\.sparkTheme) private var theme
+    func body(content: Content) -> some View {
+        content.padding(.vertical, 12).overlay(alignment: .bottom) {
+            Rectangle().fill(theme.hairline).frame(height: 1)
+        }
     }
 }
